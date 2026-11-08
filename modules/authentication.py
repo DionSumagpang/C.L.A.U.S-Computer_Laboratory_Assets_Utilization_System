@@ -98,7 +98,7 @@ def login_page():
 
         with st.expander("Demo accounts"):
             st.caption("Usernames: jdelacruz, mreyes, asantos, lgarcia, "
-                       "rbautista\n\nPassword (all): `Claus@2026`")
+                       "rbautista")
 
 
 def logout():
