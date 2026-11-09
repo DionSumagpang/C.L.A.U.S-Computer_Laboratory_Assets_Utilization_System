@@ -9,10 +9,10 @@ Program flow:
 import streamlit as st
 
 from assets.database import database as db
-from modules import LOGO_PATH
+from modules import LOGO_DARK
 from modules import authentication, dashboard
 
-st.set_page_config(page_title="C.L.A.U.S.", page_icon=LOGO_PATH,
+st.set_page_config(page_title="C.L.A.U.S.", page_icon=LOGO_DARK,
                    layout="wide")
 
 db.init_db()
