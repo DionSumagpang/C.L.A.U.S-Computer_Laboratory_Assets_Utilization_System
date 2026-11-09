@@ -59,13 +59,10 @@ def login_page():
     empty_left, middle, empty_right = st.columns([1, 1.2, 1])
 
     with middle:
-        a, logo_column, b = st.columns([1, 1.4, 1])
+        a, logo_column, b = st.columns([1, 2.4, 1])
         logo_column.image(get_logo_path(), width="stretch")
-        st.markdown("<h1 style='text-align:center'>C.L.A.U.S.</h1>",
-                    unsafe_allow_html=True)
         st.markdown(
-            "<p style='text-align:center;color:gray'>Computer Laboratory "
-            "Assets Utilization System<br>"
+            "<p style='text-align:center;color:gray'>"
             "CpE Faculty · Batangas State University</p>",
             unsafe_allow_html=True)
 
@@ -97,8 +94,8 @@ def login_page():
                 st.error("Unexpected error while logging in: " + str(error))
 
         with st.expander("Demo accounts"):
-            st.caption("Usernames: jdelacruz, mreyes, asantos, lgarcia, "
-                       "rbautista")
+            st.caption("Usernames: payengmahinhin, alniangsoftspoken, "
+                         "nerishinggutom, kurttalldarkhandsome")
 
 
 def logout():

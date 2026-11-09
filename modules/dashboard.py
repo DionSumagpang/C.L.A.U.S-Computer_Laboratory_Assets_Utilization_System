@@ -20,11 +20,7 @@ def render():
     user = st.session_state["user"]
 
     with st.sidebar:
-        a, logo_column, b = st.columns([1, 2, 1])
-        logo_column.image(get_logo_path(), width="stretch")
-        st.markdown("<h2 style='text-align:center;margin:0'>C.L.A.U.S.</h2>",
-                    unsafe_allow_html=True)
-        st.caption("Computer Laboratory Assets Utilization System")
+        st.image(get_logo_path(), width="stretch")
         st.divider()
         st.markdown("**" + user["full_name"] + "**  \n" + user["role"])
         st.divider()

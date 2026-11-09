@@ -22,7 +22,7 @@ from reportlab.platypus import (Image, Paragraph, SimpleDocTemplate, Spacer,
                                 Table, TableStyle)
 
 from assets.database import database as db
-from modules import LOGO_LIGHT, ROOMS, STATUSES, STATUS_COLORS
+from modules import LOGO_PATH, ROOMS, STATUSES, STATUS_COLORS
 
 
 # ===========================================================================
@@ -293,12 +293,13 @@ def build_pdf(room_counts, admin_name):
 
     # 1. Header with logo
     header = Table(
-        [[Image(LOGO_LIGHT, width=0.95 * inch, height=0.89 * inch),
+        [[Image(LOGO_PATH, width=1.3 * inch, height=1.22 * inch),
           [Paragraph("Batangas State University", styles["Heading3"]),
            Paragraph("The National Engineering University", styles["Normal"]),
            Paragraph("Computer Engineering Faculty", styles["Normal"])]]],
-        colWidths=[1.2 * inch, 5 * inch])
-    header.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE")]))
+        colWidths=[1.5 * inch, 4.7 * inch])
+    header.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("BACKGROUND", (0, 0), (0, 0), colors.black)]))
 
     # 2. Bar chart
     figure = bar_figure(room_counts)
