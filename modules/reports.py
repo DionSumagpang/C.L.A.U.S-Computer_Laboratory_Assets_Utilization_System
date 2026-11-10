@@ -23,7 +23,7 @@ from reportlab.platypus import (Image, Paragraph, SimpleDocTemplate, Spacer,
                                 Table, TableStyle)
 
 from assets.database import database as db
-from modules import (LOGO_MARK_DARK, ROOMS, STATUSES, STATUS_COLORS,
+from modules import (LOGO_MARK_LIGHT, ROOMS, STATUSES, STATUS_COLORS,
                      SUBTITLE)
 
 SUMMARY_COLUMNS = ["Room", "Working", "Defective", "Needs Maintenance",
@@ -260,17 +260,13 @@ def build_summary_paragraph(room_counts):
 # ===========================================================================
 def make_pdf_header(styles):
     """Logo (left) and university name + system subtitle (right)."""
-    logo = Image(LOGO_MARK_DARK, width=1.3 * inch, height=1.12 * inch)
-    subtitle_style = styles["Normal"].clone("subtitle", fontName="Helvetica-Bold",
-                                            fontSize=10, leading=13)
+    logo = Image(LOGO_MARK_LIGHT, width=1.3 * inch, height=1.12 * inch)
     text = [Paragraph("Batangas State University", styles["Heading3"]),
             Paragraph("The National Engineering University", styles["Normal"]),
             Paragraph("Computer Engineering Faculty", styles["Normal"]),
-            Spacer(1, 4),
-            Paragraph(SUBTITLE.upper(), subtitle_style)]
+            Paragraph("<b>" + SUBTITLE.upper() + "</b>", styles["Normal"])]
     header = Table([[logo, text]], colWidths=[1.5 * inch, 4.7 * inch])
-    header.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                                ("BACKGROUND", (0, 0), (0, 0), colors.black)]))
+    header.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE")]))
     return header
 
 
