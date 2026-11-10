@@ -30,11 +30,11 @@ DB_PATH = os.path.join(DB_FOLDER, "claus.db")
 # ---------------------------------------------------------------------------
 # (username, full name, role). Demo password for everyone: Claus@2026
 ADMIN_SAMPLES = [
-      ("payengmahinhin", "Natalie Faye A. Claus", "Laboratory Head"),
-      ("alniangsoftspoken", "Alnia Victoria B. Capulong", "Laboratory Technician"),
-      ("nerishinggutom", "Nerish Regonay C. Peria", "CpE Faculty"),
-      ("kurttalldarkhandsome", "Kurt D. Raz", "Laboratory Assistant"),
-  ]
+    ("natalieclaus", "Natalie Faye C. Claus", "Laboratory Head"),
+    ("alniacapulong", "Alnia Victoria R. Capulong", "Laboratory Technician"),
+    ("nerishperia", "Nerish R. Peria", "CpE Faculty"),
+    ("kurtraz", "Kurt Adrielle D. Raz", "Laboratory Assistant"),
+]
 DEMO_PASSWORD = "Claus@2026"
 
 CPU_CHOICES = ["Intel Core i3-10100", "Intel Core i5-10400",

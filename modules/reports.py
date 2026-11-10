@@ -1,11 +1,12 @@
-"""Charts, summary paragraph, report page, and PDF / Excel export.
+"""Reports: charts, summary paragraph, report page, PDF and Excel export.
 
-Plain functions only. Room data is passed around as a dictionary:
+Plain functions only. Room data is a dictionary:
     room_counts = {"CpE Lab 1": {"Working": 20, "Defective": 5,
                                  "Needs Maintenance": 5}, ...}
 """
 import io
 from datetime import datetime
+from xml.sax.saxutils import escape
 
 import matplotlib
 matplotlib.use("Agg")
@@ -22,14 +23,20 @@ from reportlab.platypus import (Image, Paragraph, SimpleDocTemplate, Spacer,
                                 Table, TableStyle)
 
 from assets.database import database as db
-from modules import LOGO_DARK, ROOMS, STATUSES, STATUS_COLORS
+from modules import (LOGO_MARK_DARK, ROOMS, STATUSES, STATUS_COLORS,
+                     SUBTITLE)
+
+SUMMARY_COLUMNS = ["Room", "Working", "Defective", "Needs Maintenance",
+                   "Total"]
+EQUIPMENT_COLUMNS = ["pc_code", "cpu", "ram_gb", "storage", "gpu", "os",
+                     "monitor", "status", "last_updated"]
 
 
 # ===========================================================================
 # DATA HELPERS
 # ===========================================================================
 def get_room_counts(rooms):
-    """Build the room_counts dictionary for the chosen rooms."""
+    """Status counts for each chosen room."""
     room_counts = {}
     for room in rooms:
         room_counts[room] = db.get_status_counts(room)
@@ -38,89 +45,102 @@ def get_room_counts(rooms):
 
 def total_of(counts):
     """Add up the three statuses of one room."""
-    return counts["Working"] + counts["Defective"] + counts["Needs Maintenance"]
+    return sum(counts[status] for status in STATUSES)
 
 
 def percent(part, whole):
-    """Return part/whole as a percentage rounded to 1 decimal (0 if whole=0)."""
+    """part / whole as a percentage with 1 decimal (0 when whole is 0)."""
     if whole == 0:
         return 0.0
     return round(part * 100 / whole, 1)
+
+
+def pc_text(number):
+    """'1 PC' or '5 PCs'."""
+    if number == 1:
+        return "1 PC"
+    return str(number) + " PCs"
+
+
+def add_up(room_counts):
+    """Totals over all rooms: Working, Defective, Needs Maintenance, Total."""
+    totals = {status: 0 for status in STATUSES}
+    for counts in room_counts.values():
+        for status in STATUSES:
+            totals[status] += counts[status]
+    totals["Total"] = total_of(totals)
+    return totals
+
+
+def build_summary_rows(room_counts):
+    """One row (dictionary) per room for the summary table."""
+    rows = []
+    for room, counts in room_counts.items():
+        rows.append({"Room": room, "Working": counts["Working"],
+                     "Defective": counts["Defective"],
+                     "Needs Maintenance": counts["Needs Maintenance"],
+                     "Total": total_of(counts)})
+    return rows
 
 
 # ===========================================================================
 # CHARTS
 # ===========================================================================
 def pie_figure(room, counts):
-    """Pie chart of one room's status split (used in each room tab).
+    """Pie chart of one room's status split.
 
     Steps:
-      1. Keep only the statuses that have at least one PC.
-      2. If there are none, write 'No equipment' in the chart.
-      3. Otherwise draw the pie with percentages and counts.
+      1. Keep the statuses that have at least one PC.
+      2. No PCs -> write 'No equipment'. Otherwise draw the pie.
     """
-    labels = []
-    sizes = []
-    pie_colors = []
+    labels, sizes, pie_colors = [], [], []
     for status in STATUSES:
         if counts[status] > 0:
             labels.append(status)
             sizes.append(counts[status])
             pie_colors.append(STATUS_COLORS[status])
-
     total = sum(sizes)
-    figure, axis = plt.subplots(figsize=(4, 4))
 
+    figure, axis = plt.subplots(figsize=(4, 4))
     if total == 0:
         axis.text(0.5, 0.5, "No equipment", ha="center", va="center")
         axis.axis("off")
     else:
         def label_maker(pct):
-            return str(round(pct, 1)) + "%\n(" + str(round(pct * total / 100)) + ")"
+            return f"{pct:.1f}%\n({round(pct * total / 100)})"
 
         axis.pie(sizes, labels=labels, colors=pie_colors,
                  autopct=label_maker, startangle=90,
                  wedgeprops={"edgecolor": "white"}, textprops={"fontsize": 9})
-
-    axis.set_title(room + " (" + str(total) + " PCs)", fontweight="bold")
+    axis.set_title(f"{room} ({total} PCs)", fontweight="bold")
     figure.tight_layout()
     return figure
 
 
 def bar_figure(room_counts):
-    """ONE vertical bar chart for all chosen rooms.
-
-    Every room is a group of three bars (Working, Defective, Needs
-    Maintenance) placed side by side, so all rooms read as one chart.
+    """ONE bar chart: each room is a group of three bars (one per status).
 
     Steps:
-      1. For each status, work out where its bar goes inside every room's
-         group (left, middle, right) and what its height is.
-      2. Draw those bars in the status colour and write the value on top.
-      3. Put the room names under the groups; add legend, title, labels.
+      1. For each status, bar position = room number + offset, height = count.
+      2. Draw the bars with their values on top.
+      3. Name the groups with the rooms; add legend, title and labels.
     """
-    rooms = list(room_counts.keys())
+    rooms = list(room_counts)
     bar_width = 0.28
     tallest = 0
 
     figure, axis = plt.subplots(figsize=(8, 4.5))
-
-    status_number = 0
-    for status in STATUSES:
+    for status_number, status in enumerate(STATUSES):
         positions = []
         heights = []
-        room_number = 0
-        for room in rooms:
+        for room_number, room in enumerate(rooms):
             positions.append(room_number + (status_number - 1) * bar_width)
             heights.append(room_counts[room][status])
-            if room_counts[room][status] > tallest:
-                tallest = room_counts[room][status]
-            room_number = room_number + 1
+        tallest = max(tallest, max(heights))
 
         bars = axis.bar(positions, heights, width=bar_width,
                         color=STATUS_COLORS[status], label=status)
         axis.bar_label(bars, padding=2, fontsize=9)
-        status_number = status_number + 1
 
     axis.set_xticks(range(len(rooms)))
     axis.set_xticklabels(rooms)
@@ -136,18 +156,21 @@ def bar_figure(room_counts):
 
 
 def figure_to_png(figure):
-    """Convert a matplotlib figure to PNG bytes (for the PDF)."""
+    """Matplotlib figure -> PNG bytes (for the PDF). Closes the figure."""
     buffer = io.BytesIO()
-    figure.savefig(buffer, format="png", dpi=180)
+    try:
+        figure.savefig(buffer, format="png", dpi=180)
+    finally:
+        plt.close(figure)
     buffer.seek(0)
     return buffer
 
 
 # ===========================================================================
-# SUMMARY PARAGRAPH
+# SUMMARY PARAGRAPH  (four small sentence builders)
 # ===========================================================================
 def condition_word(working_rate):
-    """Turn an overall working percentage into a short description."""
+    """Overall working % -> short description."""
     if working_rate >= 80:
         return "good condition"
     if working_rate >= 60:
@@ -155,189 +178,143 @@ def condition_word(working_rate):
     return "poor condition that needs urgent attention"
 
 
+def intro_sentence(room_counts, total_pcs):
+    """Sentence 1: date, number of rooms and PCs."""
+    count = len(room_counts)
+    word = "room" if count == 1 else "rooms"
+    names = ", ".join(room_counts)
+    return (f"As of {datetime.now():%B %d, %Y}, this report covers {count} "
+            f"laboratory {word} ({names}) with {pc_text(total_pcs)} in total.")
+
+
+def overall_sentence(totals):
+    """Sentence 2: overall numbers and condition."""
+    total = totals["Total"]
+    working = totals["Working"]
+    defective = totals["Defective"]
+    maintenance = totals["Needs Maintenance"]
+    rate = percent(working, total)
+    return (f"Overall, working: {working} ({rate}%), "
+            f"defective: {defective} ({percent(defective, total)}%), "
+            f"needs maintenance: {maintenance} "
+            f"({percent(maintenance, total)}%), which puts the equipment in "
+            f"{condition_word(rate)}.")
+
+
+def compare_sentence(room_counts):
+    """Sentence 3: best vs. weakest room ('' when fewer than 2 rooms)."""
+    rates = {}
+    for room, counts in room_counts.items():
+        if total_of(counts) > 0:
+            rates[room] = percent(counts["Working"], total_of(counts))
+    if len(rates) < 2:
+        return ""
+
+    best = max(rates, key=rates.get)
+    worst = min(rates, key=rates.get)
+    if rates[best] == rates[worst]:
+        return f"All rooms have the same working rate of {rates[best]}%."
+    return (f"{best} has the highest working rate at {rates[best]}%, "
+            f"while {worst} has the lowest at {rates[worst]}%.")
+
+
+def action_sentence(room_counts, totals):
+    """Sentence 4: what to do next."""
+    defective = totals["Defective"]
+    maintenance = totals["Needs Maintenance"]
+    not_usable = defective + maintenance
+    # room with the most defective PCs (the first one when tied)
+    worst_room = max(room_counts, key=lambda r: room_counts[r]["Defective"])
+
+    if not_usable == 0:
+        return "Every PC is working, so only routine inspections are needed."
+    if defective > 0 and maintenance > 0:
+        return (f"{pc_text(not_usable)} "
+                f"({percent(not_usable, totals['Total'])}%) in total are not "
+                f"fully usable, so repairs should be prioritized for the "
+                f"{defective} defective units, starting with {worst_room}, "
+                f"followed by scheduled maintenance for the {maintenance} "
+                f"flagged units.")
+    if defective > 0:
+        return (f"Defective: {pc_text(defective)}. These need repair or "
+                f"replacement, starting with {worst_room}.")
+    return (f"Flagged for maintenance: {pc_text(maintenance)}. These should "
+            f"be serviced soon before they become defective.")
+
+
 def build_summary_paragraph(room_counts):
-    """Write ONE paragraph that explains the numbers of the chosen rooms.
-
-    Steps:
-      1. Add up working / defective / maintenance PCs over all rooms.
-      2. Find the room with the highest and lowest working rate, and the
-         room with the most defective PCs.
-      3. Write sentence 1: how many rooms and PCs.
-      4. Write sentence 2: overall numbers and overall condition.
-      5. Write sentence 3 (only if 2+ rooms): best vs. weakest room.
-      6. Write sentence 4: what should be done next.
-      7. Join the sentences into one paragraph.
-    """
-    total_working = 0
-    total_defective = 0
-    total_maintenance = 0
-    best_room = ""
-    best_rate = -1.0
-    worst_room = ""
-    worst_rate = 101.0
-    defective_room = ""
-    most_defective = 0
-    rooms_with_pcs = 0
-
-    for room in room_counts:
-        counts = room_counts[room]
-        room_total = total_of(counts)
-        total_working = total_working + counts["Working"]
-        total_defective = total_defective + counts["Defective"]
-        total_maintenance = total_maintenance + counts["Needs Maintenance"]
-
-        if counts["Defective"] > most_defective:
-            most_defective = counts["Defective"]
-            defective_room = room
-
-        if room_total > 0:
-            rooms_with_pcs = rooms_with_pcs + 1
-            rate = percent(counts["Working"], room_total)
-            if rate > best_rate:
-                best_rate = rate
-                best_room = room
-            if rate < worst_rate:
-                worst_rate = rate
-                worst_room = room
-
-    total_pcs = total_working + total_defective + total_maintenance
-    if total_pcs == 0:
+    """One paragraph explaining the numbers (intro, overall, compare, action)."""
+    totals = add_up(room_counts)
+    if totals["Total"] == 0:
         return "No equipment records are available for the selected rooms."
 
-    room_names = ", ".join(room_counts.keys())
-    if len(room_counts) == 1:
-        room_phrase = "1 laboratory room (" + room_names + ")"
-    else:
-        room_phrase = (str(len(room_counts)) + " laboratory rooms (" +
-                       room_names + ")")
-    working_rate = percent(total_working, total_pcs)
-
-    sentences = []
-
-    sentences.append(
-        "As of " + datetime.now().strftime("%B %d, %Y") + ", this report covers " +
-        room_phrase + " with " + str(total_pcs) + " PCs in total.")
-
-    sentences.append(
-        "Overall, " + str(total_working) + " PCs (" + str(working_rate) +
-        "%) are working, " + str(total_defective) + " (" +
-        str(percent(total_defective, total_pcs)) + "%) are defective, and " +
-        str(total_maintenance) + " (" +
-        str(percent(total_maintenance, total_pcs)) +
-        "%) need maintenance, which puts the equipment in " +
-        condition_word(working_rate) + ".")
-
-    if rooms_with_pcs >= 2:
-        if best_rate == worst_rate:
-            sentences.append(
-                "All rooms have the same working rate of " + str(best_rate) + "%.")
-        else:
-            sentences.append(
-                best_room + " has the highest working rate at " +
-                str(best_rate) + "%, while " + worst_room +
-                " has the lowest at " + str(worst_rate) + "%.")
-
-    not_usable = total_defective + total_maintenance
-    if not_usable == 0:
-        sentences.append(
-            "Every PC is working, so only routine inspections are needed.")
-    elif total_defective > 0 and total_maintenance > 0:
-        sentences.append(
-            str(not_usable) + " PCs (" + str(percent(not_usable, total_pcs)) +
-            "%) are not fully usable, so repairs should be prioritized for the " +
-            str(total_defective) + " defective units, starting with " +
-            defective_room + ", followed by scheduled maintenance for the " +
-            str(total_maintenance) + " flagged PCs.")
-    elif total_defective > 0:
-        sentences.append(
-            "The " + str(total_defective) + " defective PCs need repair or "
-            "replacement, starting with " + defective_room + ".")
-    else:
-        sentences.append(
-            "The " + str(total_maintenance) +
-            " PCs flagged for maintenance should be serviced soon "
-            "before they become defective.")
-
-    return " ".join(sentences)
-
-
-# ===========================================================================
-# TABLE FOR THE SUMMARY
-# ===========================================================================
-def build_summary_rows(room_counts):
-    """List of rows: Room, Working, Defective, Needs Maintenance, Total."""
-    rows = []
-    for room in room_counts:
-        counts = room_counts[room]
-        rows.append({"Room": room,
-                     "Working": counts["Working"],
-                     "Defective": counts["Defective"],
-                     "Needs Maintenance": counts["Needs Maintenance"],
-                     "Total": total_of(counts)})
-    return rows
+    sentences = [intro_sentence(room_counts, totals["Total"]),
+                 overall_sentence(totals),
+                 compare_sentence(room_counts),
+                 action_sentence(room_counts, totals)]
+    return " ".join(s for s in sentences if s != "")
 
 
 # ===========================================================================
 # EXPORT: PDF
 # ===========================================================================
-def build_pdf(room_counts, admin_name):
-    """Create the PDF report and return it as bytes.
+def make_pdf_header(styles):
+    """Logo (left) and university name + system subtitle (right)."""
+    logo = Image(LOGO_MARK_DARK, width=1.3 * inch, height=1.12 * inch)
+    subtitle_style = styles["Normal"].clone("subtitle", fontName="Helvetica-Bold",
+                                            fontSize=10, leading=13)
+    text = [Paragraph("Batangas State University", styles["Heading3"]),
+            Paragraph("The National Engineering University", styles["Normal"]),
+            Paragraph("Computer Engineering Faculty", styles["Normal"]),
+            Spacer(1, 4),
+            Paragraph(SUBTITLE.upper(), subtitle_style)]
+    header = Table([[logo, text]], colWidths=[1.5 * inch, 4.7 * inch])
+    header.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                                ("BACKGROUND", (0, 0), (0, 0), colors.black)]))
+    return header
 
-    Page order: logo header -> title -> bar chart -> summary table ->
-    summary paragraph.
+
+def make_pdf_table(room_counts):
+    """The Room / Working / Defective / Needs Maintenance / Total table."""
+    data = [SUMMARY_COLUMNS]
+    for row in build_summary_rows(room_counts):
+        data.append([row[column] for column in SUMMARY_COLUMNS])
+    table = Table(data, colWidths=[1.6 * inch, 1 * inch, 1 * inch,
+                                   1.6 * inch, 0.9 * inch])
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#333333")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+        ("ALIGN", (1, 0), (-1, -1), "CENTER"),
+    ]))
+    return table
+
+
+def build_pdf(room_counts, admin_name):
+    """Create the PDF report and return its bytes.
+
+    Page order: header -> title -> bar chart -> table -> summary.
     """
     output = io.BytesIO()
     document = SimpleDocTemplate(output, pagesize=A4, topMargin=0.6 * inch,
                                  bottomMargin=0.6 * inch)
     styles = getSampleStyleSheet()
 
-    # 1. Header with logo
-    header = Table(
-        [[Image(LOGO_DARK, width=1.3 * inch, height=1.22 * inch),
-          [Paragraph("Batangas State University", styles["Heading3"]),
-           Paragraph("The National Engineering University", styles["Normal"]),
-           Paragraph("Computer Engineering Faculty", styles["Normal"])]]],
-        colWidths=[1.5 * inch, 4.7 * inch])
-    header.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                    ("BACKGROUND", (0, 0), (0, 0), colors.black)]))
+    chart = Image(figure_to_png(bar_figure(room_counts)),
+                  width=6.4 * inch, height=3.6 * inch)
+    # escape() keeps names such as "A & B" from breaking the PDF text
+    generated = (f"Generated by {escape(admin_name)} on "
+                 f"{datetime.now():%B %d, %Y %I:%M %p}")
 
-    # 2. Bar chart
-    figure = bar_figure(room_counts)
-    chart_image = Image(figure_to_png(figure), width=6.4 * inch,
-                        height=3.6 * inch)
-    plt.close(figure)
-
-    # 3. Summary table
-    table_data = [["Room", "Working", "Defective", "Needs Maintenance", "Total"]]
-    for row in build_summary_rows(room_counts):
-        table_data.append([row["Room"], row["Working"], row["Defective"],
-                           row["Needs Maintenance"], row["Total"]])
-    summary_table = Table(table_data, colWidths=[1.6 * inch, 1 * inch,
-                                                 1 * inch, 1.6 * inch,
-                                                 0.9 * inch])
-    summary_table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#333333")),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
-        ("ALIGN", (1, 0), (-1, -1), "CENTER"),
-    ]))
-
-    # 4. Put everything on the page
-    story = [
-        header, Spacer(1, 8),
-        Paragraph("Project C.L.A.U.S. - Equipment Status Report",
-                  styles["Title"]),
-        Paragraph("Generated by " + admin_name + " on " +
-                  datetime.now().strftime("%B %d, %Y %I:%M %p"),
-                  styles["Normal"]),
-        Spacer(1, 12),
-        chart_image,
-        Spacer(1, 10),
-        summary_table,
-        Spacer(1, 14),
-        Paragraph("Summary", styles["Heading2"]),
-        Paragraph(build_summary_paragraph(room_counts), styles["BodyText"]),
-    ]
+    story = [make_pdf_header(styles), Spacer(1, 8),
+             Paragraph("Project C.L.A.U.S. - Equipment Status Report",
+                       styles["Title"]),
+             Paragraph(generated, styles["Normal"]),
+             Spacer(1, 12), chart, Spacer(1, 10),
+             make_pdf_table(room_counts), Spacer(1, 14),
+             Paragraph("Summary", styles["Heading2"]),
+             Paragraph(escape(build_summary_paragraph(room_counts)),
+                       styles["BodyText"])]
     document.build(story)
     return output.getvalue()
 
@@ -345,43 +322,48 @@ def build_pdf(room_counts, admin_name):
 # ===========================================================================
 # EXPORT: EXCEL
 # ===========================================================================
+def style_sheet(sheet):
+    """Bold white header on dark fill, and fit each column's width."""
+    for cell in sheet[1]:
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill("solid", fgColor="333333")
+    for column in sheet.columns:
+        longest = max(len(str(cell.value or "")) for cell in column)
+        sheet.column_dimensions[column[0].column_letter].width = longest + 3
+
+
+def add_summary_text(sheet, row_count, paragraph):
+    """Write the summary paragraph under the summary table."""
+    title_row = row_count + 3
+    text_row = row_count + 4
+    sheet.cell(row=title_row, column=1, value="Summary").font = Font(bold=True)
+    sheet.merge_cells(start_row=text_row, start_column=1,
+                      end_row=text_row, end_column=5)
+    cell = sheet.cell(row=text_row, column=1, value=paragraph)
+    cell.alignment = Alignment(wrap_text=True, vertical="top")
+    sheet.row_dimensions[text_row].height = 120
+
+
 def build_excel(room_counts):
-    """Create the Excel file (summary sheet + one sheet per room)."""
+    """Excel file: Summary sheet + one sheet per room. Returns bytes.
+
+    A room without PCs still gets a sheet (headers only).
+    """
     output = io.BytesIO()
     summary_rows = build_summary_rows(room_counts)
 
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        pd.DataFrame(summary_rows).to_excel(writer, sheet_name="Summary",
-                                            index=False)
+        pd.DataFrame(summary_rows, columns=SUMMARY_COLUMNS).to_excel(
+            writer, sheet_name="Summary", index=False)
         for room in room_counts:
-            records = pd.DataFrame(db.get_equipment_by_room(room))
-            records = records.drop(columns=["id", "room"])
+            records = pd.DataFrame(db.get_equipment_by_room(room),
+                                   columns=EQUIPMENT_COLUMNS)
             records.to_excel(writer, sheet_name=room, index=False)
 
-        # Style the header row and set column widths on every sheet
         for sheet in writer.book.worksheets:
-            for cell in sheet[1]:
-                cell.font = Font(bold=True, color="FFFFFF")
-                cell.fill = PatternFill("solid", fgColor="333333")
-            for column in sheet.columns:
-                longest = 0
-                for cell in column:
-                    length = len(str(cell.value or ""))
-                    if length > longest:
-                        longest = length
-                sheet.column_dimensions[column[0].column_letter].width = longest + 3
-
-        # Write the summary paragraph under the summary table
-        summary_sheet = writer.sheets["Summary"]
-        paragraph_row = len(summary_rows) + 4
-        summary_sheet.cell(row=paragraph_row - 1, column=1, value="Summary").font = Font(bold=True)
-        summary_sheet.merge_cells(start_row=paragraph_row, start_column=1,
-                                  end_row=paragraph_row, end_column=5)
-        paragraph_cell = summary_sheet.cell(row=paragraph_row, column=1,
-                                            value=build_summary_paragraph(room_counts))
-        paragraph_cell.alignment = Alignment(wrap_text=True, vertical="top")
-        summary_sheet.row_dimensions[paragraph_row].height = 120
-
+            style_sheet(sheet)
+        add_summary_text(writer.sheets["Summary"], len(summary_rows),
+                         build_summary_paragraph(room_counts))
     return output.getvalue()
 
 
@@ -389,19 +371,47 @@ def build_excel(room_counts):
 # PAGE
 # ===========================================================================
 def log_export(username, kind, rooms):
-    """Callback: runs when a download button is clicked -> audit log."""
+    """Runs when a download button is clicked -> audit log."""
     db.add_audit_log(username, "EXPORT_" + kind, "", "",
                      "Rooms: " + ", ".join(rooms))
+
+
+def show_downloads(room_counts, chosen_rooms, user):
+    """PDF and Excel download buttons. A failed export shows a message
+    instead of crashing the page."""
+    stamp = datetime.now().strftime("%Y%m%d_%H%M")
+    col_pdf, col_excel = st.columns(2)
+
+    try:
+        pdf_bytes = build_pdf(room_counts, user["full_name"])
+        col_pdf.download_button(
+            "⬇️ Download PDF report", pdf_bytes,
+            f"CLAUS_report_{stamp}.pdf", "application/pdf",
+            width="stretch", type="primary",
+            on_click=log_export, args=(user["username"], "PDF", chosen_rooms))
+    except Exception as error:
+        col_pdf.error("Could not create the PDF: " + str(error))
+
+    try:
+        excel_bytes = build_excel(room_counts)
+        col_excel.download_button(
+            "⬇️ Download Excel records", excel_bytes,
+            f"CLAUS_equipment_{stamp}.xlsx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            width="stretch",
+            on_click=log_export, args=(user["username"], "EXCEL", chosen_rooms))
+    except Exception as error:
+        col_excel.error("Could not create the Excel file: " + str(error))
 
 
 def render(user):
     """Draw the Reports page.
 
     Steps:
-      1. Let the admin choose which rooms to include (rooms can be removed).
-      2. Read the status counts of those rooms.
-      3. Show the bar chart, the summary table and the paragraph.
-      4. Show the PDF and Excel download buttons (each click is logged).
+      1. Admin picks the rooms to include.
+      2. Read their status counts.
+      3. Show bar chart, summary table and paragraph.
+      4. Show the PDF / Excel download buttons.
     """
     st.subheader("📊 Equipment Status Report")
     chosen_rooms = st.multiselect("Rooms included (remove a room with ✕)",
@@ -424,16 +434,4 @@ def render(user):
 
     st.divider()
     st.markdown("**Export**")
-    stamp = datetime.now().strftime("%Y%m%d_%H%M")
-    col_pdf, col_excel = st.columns(2)
-    col_pdf.download_button(
-        "⬇️ Download PDF report", build_pdf(room_counts, user["full_name"]),
-        "CLAUS_report_" + stamp + ".pdf", "application/pdf",
-        width="stretch", type="primary",
-        on_click=log_export, args=(user["username"], "PDF", chosen_rooms))
-    col_excel.download_button(
-        "⬇️ Download Excel records", build_excel(room_counts),
-        "CLAUS_equipment_" + stamp + ".xlsx",
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        width="stretch",
-        on_click=log_export, args=(user["username"], "EXCEL", chosen_rooms))
+    show_downloads(room_counts, chosen_rooms, user)

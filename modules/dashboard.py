@@ -1,7 +1,7 @@
 """Main admin screen: sidebar menu and the page that was chosen."""
 import streamlit as st
 
-from modules import ROOMS, get_logo_path
+from modules import ROOMS, get_logo_path, subtitle_html
 from modules import audit, equipment, reports
 from modules.authentication import logout
 
@@ -13,7 +13,7 @@ def render():
 
     Steps:
       1. Show logo, admin name/role, menu and the Log out button.
-      2. If 'Laboratory Monitoring': one tab per room -> render_room.
+      2. If 'Equipment Monitoring': one tab per room -> render_room.
       3. If 'Reports': show the report page.
       4. If 'Audit Logs': show the audit log page.
     """
@@ -21,6 +21,7 @@ def render():
 
     with st.sidebar:
         st.image(get_logo_path(), width="stretch")
+        st.markdown(subtitle_html("0.85rem"), unsafe_allow_html=True)
         st.divider()
         st.markdown("**" + user["full_name"] + "**  \n" + user["role"])
         st.divider()
@@ -36,11 +37,9 @@ def render():
             tab_names.append("🏫 " + room)
         tabs = st.tabs(tab_names)
 
-        index = 0
-        for room in ROOMS:
+        for index, room in enumerate(ROOMS):
             with tabs[index]:
                 equipment.render_room(room)
-            index = index + 1
     elif page == MENU[1]:
         reports.render(user)
     else:

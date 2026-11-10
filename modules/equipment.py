@@ -49,11 +49,8 @@ def filter_rows(rows, search_word, status_filter):
             continue
 
         if word != "":
-            found = False
-            for column in TABLE_COLUMNS:
-                if word in str(row[column]).lower():
-                    found = True
-            if not found:
+            text = " ".join(str(row[column]) for column in TABLE_COLUMNS)
+            if word not in text.lower():
                 continue
 
         kept.append(row)
