@@ -2,10 +2,10 @@
 import streamlit as st
 
 from modules import ROOMS, get_logo_path, subtitle_html
-from modules import audit, equipment, reports
+from modules import audit, equipment, maintenance, reports
 from modules.authentication import logout
 
-MENU = ["🖥️ Equipment Monitoring", "📊 Reports", "📜 Audit Logs"]
+MENU = ["🖥️ Equipment Monitoring", "🔧 Maintenance", "📊 Reports", "📜 Audit Logs"]
 
 
 def render():
@@ -14,8 +14,9 @@ def render():
     Steps:
       1. Show logo, admin name/role, menu and the Log out button.
       2. If 'Equipment Monitoring': one tab per room -> render_room.
-      3. If 'Reports': show the report page.
-      4. If 'Audit Logs': show the audit log page.
+      3. If 'Maintenance': show the maintenance tracking page.
+      4. If 'Reports': show the report page.
+      5. If 'Audit Logs': show the audit log page.
     """
     user = st.session_state["user"]
 
@@ -41,6 +42,8 @@ def render():
             with tabs[index]:
                 equipment.render_room(room)
     elif page == MENU[1]:
+        maintenance.render(user)
+    elif page == MENU[2]:
         reports.render(user)
     else:
         audit.render_audit_logs()

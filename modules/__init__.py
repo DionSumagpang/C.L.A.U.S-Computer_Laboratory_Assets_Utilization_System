@@ -11,7 +11,7 @@ LOGO_MARK_DARK = os.path.join(ASSETS_DIR, "logo_mark.png")   # logo without subt
 LOGO_MARK_LIGHT = os.path.join(ASSETS_DIR, "logo_mark_light.png")
 SUBTITLE = "Computer Laboratory Assets Utilization System"
 
-ROOMS = ["CpE Lab 1", "CpE Lab 2", "CpE Lab 3"]
+ROOMS = ["CPE LAB 1", "CPE LAB 2", "Com LAB 3"]
 STATUSES = ["Working", "Defective", "Needs Maintenance"]
 STATUS_COLORS = {
     "Working": "#2e9e5b",
@@ -19,8 +19,30 @@ STATUS_COLORS = {
     "Needs Maintenance": "#e8a317",
 }
 
-# How many sample PCs are created per room on first run
-ROOM_SIZES = {"CpE Lab 1": 30, "CpE Lab 2": 25, "CpE Lab 3": 20}
+# Maintenance constants
+MAINTENANCE_STATUSES = ["Pending", "In Progress", "Completed"]
+MAINTENANCE_STATUS_COLORS = {
+    "Pending": "#e8a317",
+    "In Progress": "#1b8fc9",
+    "Completed": "#2e9e5b",
+}
+MAINTENANCE_TYPES = [
+    "Hardware Repair",
+    "Software Issue",
+    "Preventive Maintenance",
+    "Component Upgrade",
+    "Network / Connectivity",
+    "Other",
+]
+
+# How many sample PCs are created per room on first run.
+# Room names must match ROOMS above. PC codes are built from the LAST word of
+# the room name (e.g. "Com LAB 3" -> L3-PC01), so keep the lab number last.
+# Each PC gets a random status (70% Working, 15% Defective,
+# 15% Needs Maintenance) and random specs - see seed_equipment() in
+# assets/database/database.py. To apply new sizes to an existing database,
+# delete assets/database/claus.db and restart the app.
+ROOM_SIZES = {"CPE LAB 1": 16, "CPE LAB 2": 26, "Com LAB 3": 29}
 
 
 def is_dark_theme():

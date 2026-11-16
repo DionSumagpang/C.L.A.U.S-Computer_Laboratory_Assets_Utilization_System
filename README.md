@@ -1,6 +1,6 @@
 # C.L.A.U.S. - Computer Laboratory Assets Utilization System
 
-Streamlit app for monitoring CpE laboratory PCs (Batangas State University).
+Streamlit app for monitoring laboratory PCs (CPE LAB 1, CPE LAB 2, Com LAB 3) (Batangas State University).
 
 ## Run
 
@@ -21,7 +21,7 @@ Demo password for all accounts: `Claus@2026`
 ## Program flow
 
 `main.py` -> `init_db()` -> logged in? **no:** login page / **yes:** dashboard
-(Equipment Monitoring, Reports, Audit Logs).
+(Equipment Monitoring, Maintenance Tracking, Reports, Audit Logs).
 
 ## Files and functions
 
@@ -32,17 +32,42 @@ Demo password for all accounts: `Claus@2026`
 | `modules/authentication.py` | Login / logout | `check_login`, `login_page`, `logout` |
 | `modules/dashboard.py` | Sidebar menu and page switch | `render` |
 | `modules/equipment.py` | Room tab: view, search, edit, remove, add PCs | `render_room`, `filter_rows`, `show_edit_and_remove`, `show_add_form` |
+| `modules/maintenance.py` | Maintenance tracking, issue logs, history & PDF/Excel export | `show_add_maintenance_form`, `show_all_maintenance_records`, `show_edit_record_form`, `show_delete_record_section`, `show_computer_maintenance_history`, `show_export_tab`, `build_maintenance_pdf`, `build_maintenance_excel`, `render` |
 | `modules/reports.py` | Charts, summary text, PDF and Excel export | `bar_figure`, `build_summary_paragraph`, `build_pdf`, `build_excel`, `render` |
 | `modules/audit.py` | Audit log page with filters | `render_audit_logs` |
-| `assets/database/database.py` | All SQLite code | `run_query`, `run_command`, `init_db`, `get_*`, `add_*`, `update_equipment`, `delete_equipment` |
+| `assets/database/database.py` | All SQLite code | `run_query`, `run_command`, `init_db`, `get_*`, `add_*`, `update_*`, `delete_*` |
 
 ## Conventions
 
 - Plain functions only (no classes); each function does one job.
 - Each docstring lists its **Steps**, which map directly to pseudocode and flowchart blocks.
 - Login errors use built-in exceptions: `ValueError` (empty field), `LookupError` (unknown user), `PermissionError` (wrong password).
-- Every login, edit, add, remove and export is written to the audit log.
+- Every login, edit, add, remove, maintenance action, and export is written to the audit log.
+
+## Rooms and sample data
+
+| Room | PCs | PC codes |
+|---|---|---|
+| CPE LAB 1 | 16 | L1-PC01 to L1-PC16 |
+| CPE LAB 2 | 26 | L2-PC01 to L2-PC26 |
+| Com LAB 3 | 29 | L3-PC01 to L3-PC29 |
+
+On first run the database is filled with sample PCs that get random specs and a
+random status (70% Working, 15% Defective, 15% Needs Maintenance). Room names
+and sizes are set in `modules/__init__.py` (`ROOMS`, `ROOM_SIZES`). After
+changing them, delete `assets/database/claus.db` and restart the app to rebuild
+the sample data.
+
+## Maintenance report export
+
+The Maintenance page has an **Export Report** tab. Pick the filters (status,
+issue type, room, search), check the preview, then download a PDF (landscape
+Letter) or an Excel file (Summary + Records sheets). Each download is written to
+the audit log as `EXPORT_MAINTENANCE_PDF` or `EXPORT_MAINTENANCE_EXCEL`.
 
 ## Database tables
 
-`admins` (username, full_name, role, password_hash) - `equipment` (pc_code, room, cpu, ram_gb, storage, gpu, os, monitor, status, last_updated) - `audit_logs` (timestamp, username, action, room, target, details)
+- `admins` (username, full_name, role, password_hash)
+- `equipment` (pc_code, room, cpu, ram_gb, storage, gpu, os, monitor, status, last_updated)
+- `maintenance` (equipment_id, pc_code, room, maintenance_date, maintenance_type, reported_problem, action_taken, status, created_by, created_at, updated_at)
+- `audit_logs` (timestamp, username, action, room, target, details)

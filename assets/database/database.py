@@ -7,7 +7,12 @@ Only plain functions are used (no classes). Every function does one job:
   Admin table       : get_admin
   Equipment table   : get_equipment_by_room, get_status_counts,
                       next_pc_code, add_equipment, update_equipment,
-                      delete_equipment
+                      delete_equipment, get_all_equipment,
+                      get_equipment_by_id, get_equipment_by_code
+  Maintenance table : add_maintenance, get_all_maintenance,
+                      get_maintenance_by_id, get_maintenance_by_equipment,
+                      check_maintenance_duplicate, update_maintenance,
+                      delete_maintenance, get_maintenance_status_counts
   Audit log table   : add_audit_log, get_audit_logs,
                       get_audit_actions, get_audit_users
 
@@ -141,6 +146,22 @@ def create_tables():
                target TEXT,
                details TEXT)""")
 
+    run_command(
+        """CREATE TABLE IF NOT EXISTS maintenance (
+               id INTEGER PRIMARY KEY AUTOINCREMENT,
+               equipment_id INTEGER NOT NULL,
+               pc_code TEXT NOT NULL,
+               room TEXT NOT NULL,
+               maintenance_date TEXT NOT NULL,
+               maintenance_type TEXT NOT NULL,
+               reported_problem TEXT NOT NULL,
+               action_taken TEXT,
+               status TEXT NOT NULL,
+               created_by TEXT NOT NULL,
+               created_at TEXT NOT NULL,
+               updated_at TEXT NOT NULL,
+               FOREIGN KEY (equipment_id) REFERENCES equipment(id))""")
+
 
 def seed_admins():
     """Insert the sample admins when the admins table is empty.
@@ -261,9 +282,12 @@ def next_pc_code(room):
     lab_number = room.split()[-1]
     biggest = 0
     for pc in get_equipment_by_room(room):
-        number = int(pc["pc_code"].split("PC")[-1])
-        if number > biggest:
-            biggest = number
+        try:
+            number = int(pc["pc_code"].split("PC")[-1])
+            if number > biggest:
+                biggest = number
+        except (ValueError, IndexError):
+            continue
     return "L" + lab_number + "-PC" + str(biggest + 1).zfill(2)
 
 
@@ -297,9 +321,190 @@ def update_equipment(pc_id, values):
          pc_id))
 
 
+def get_all_equipment():
+    """Return every PC across all rooms, sorted by room and pc_code."""
+    return run_query("SELECT * FROM equipment ORDER BY room, pc_code")
+
+
+def get_equipment_by_id(pc_id):
+    """Return one PC dictionary by its database ID, or None if not found."""
+    rows = run_query("SELECT * FROM equipment WHERE id = ?", (pc_id,))
+    if len(rows) == 0:
+        return None
+    return rows[0]
+
+
+def get_equipment_by_code(pc_code):
+    """Return one PC dictionary by its PC code, or None if not found."""
+    rows = run_query("SELECT * FROM equipment WHERE pc_code = ?", (pc_code,))
+    if len(rows) == 0:
+        return None
+    return rows[0]
+
+
 def delete_equipment(pc_id):
-    """Remove one PC from the database."""
+    """Remove one PC and all its maintenance records from the database.
+
+    Steps:
+      1. Delete all maintenance logs linked to this PC (prevents orphan records).
+      2. Delete the PC record from the equipment table.
+    """
+    run_command("DELETE FROM maintenance WHERE equipment_id = ?", (pc_id,))
     run_command("DELETE FROM equipment WHERE id = ?", (pc_id,))
+
+
+# ===========================================================================
+# MAINTENANCE TABLE
+# ===========================================================================
+def add_maintenance(values):
+    """Insert a new maintenance record and return its new database ID.
+
+    `values` is a dictionary with: equipment_id, pc_code, room,
+    maintenance_date, maintenance_type, reported_problem, action_taken,
+    status, created_by.
+
+    Steps:
+      1. Get current date and time for timestamps.
+      2. Open a connection and execute INSERT.
+      3. Commit and return the generated ID.
+    """
+    now = now_text()
+    connection = get_connection()
+    try:
+        cursor = connection.cursor()
+        cursor.execute(
+            """INSERT INTO maintenance
+               (equipment_id, pc_code, room, maintenance_date,
+                maintenance_type, reported_problem, action_taken,
+                status, created_by, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (values["equipment_id"], values["pc_code"], values["room"],
+             values["maintenance_date"], values["maintenance_type"],
+             values["reported_problem"], values.get("action_taken", ""),
+             values["status"], values["created_by"], now, now))
+        record_id = cursor.lastrowid
+        connection.commit()
+        return record_id
+    finally:
+        connection.close()
+
+
+def get_all_maintenance(status_filter="All", type_filter="All",
+                        room_filter="All", search=""):
+    """Return maintenance records that match the filters, newest date first.
+
+    Steps:
+      1. Start with an empty list of SQL conditions and parameters.
+      2. If a status filter is selected, append a condition for status.
+      3. If a type filter is selected, append a condition for maintenance_type.
+      4. If a room filter is selected, append a condition for room.
+      5. If a search query is given, search in pc_code, reported_problem,
+         action_taken, or created_by.
+      6. Query the database, order by maintenance_date DESC, id DESC.
+    """
+    conditions = []
+    params = []
+
+    if status_filter != "All":
+        conditions.append("status = ?")
+        params.append(status_filter)
+
+    if type_filter != "All":
+        conditions.append("maintenance_type = ?")
+        params.append(type_filter)
+
+    if room_filter != "All":
+        conditions.append("room = ?")
+        params.append(room_filter)
+
+    if search.strip() != "":
+        conditions.append(
+            "(pc_code LIKE ? OR reported_problem LIKE ? OR action_taken LIKE ? OR created_by LIKE ?)")
+        pattern = "%" + search.strip() + "%"
+        params.append(pattern)
+        params.append(pattern)
+        params.append(pattern)
+        params.append(pattern)
+
+    sql = "SELECT * FROM maintenance"
+    if len(conditions) > 0:
+        sql = sql + " WHERE " + " AND ".join(conditions)
+    sql = sql + " ORDER BY maintenance_date DESC, id DESC"
+
+    return run_query(sql, tuple(params))
+
+
+def get_maintenance_by_id(record_id):
+    """Return one maintenance record dictionary by ID, or None if not found."""
+    rows = run_query("SELECT * FROM maintenance WHERE id = ?", (record_id,))
+    if len(rows) == 0:
+        return None
+    return rows[0]
+
+
+def get_maintenance_by_equipment(equipment_id):
+    """Return all maintenance records for one computer, sorted newest first."""
+    return run_query(
+        "SELECT * FROM maintenance WHERE equipment_id = ? "
+        "ORDER BY maintenance_date DESC, id DESC",
+        (equipment_id,))
+
+
+def check_maintenance_duplicate(equipment_id, maintenance_date, maintenance_type, exclude_id=None):
+    """Return True if an identical record exists for this PC, date, and type."""
+    if exclude_id is not None:
+        rows = run_query(
+            "SELECT id FROM maintenance "
+            "WHERE equipment_id = ? AND maintenance_date = ? AND maintenance_type = ? AND id != ?",
+            (equipment_id, maintenance_date, maintenance_type, exclude_id))
+    else:
+        rows = run_query(
+            "SELECT id FROM maintenance "
+            "WHERE equipment_id = ? AND maintenance_date = ? AND maintenance_type = ?",
+            (equipment_id, maintenance_date, maintenance_type))
+    return len(rows) > 0
+
+
+def update_maintenance(record_id, values):
+    """Overwrite the details of one maintenance record with new values.
+
+    Steps:
+      1. Prepare the updated values and current timestamp.
+      2. Execute UPDATE query matching the record's ID.
+    """
+    run_command(
+        """UPDATE maintenance
+           SET maintenance_date = ?, maintenance_type = ?,
+               reported_problem = ?, action_taken = ?,
+               status = ?, updated_at = ?
+           WHERE id = ?""",
+        (values["maintenance_date"], values["maintenance_type"],
+         values["reported_problem"], values.get("action_taken", ""),
+         values["status"], now_text(), record_id))
+
+
+def delete_maintenance(record_id):
+    """Remove one maintenance record from the database by its ID."""
+    run_command("DELETE FROM maintenance WHERE id = ?", (record_id,))
+
+
+def get_maintenance_status_counts(room="All"):
+    """Return dictionary of how many maintenance records are in each status.
+
+    Returns: {'Pending': x, 'In Progress': y, 'Completed': z}
+    """
+    counts = {"Pending": 0, "In Progress": 0, "Completed": 0}
+    if room == "All":
+        rows = run_query(
+            "SELECT status, COUNT(*) AS total FROM maintenance GROUP BY status")
+    else:
+        rows = run_query(
+            "SELECT status, COUNT(*) AS total FROM maintenance "
+            "WHERE room = ? GROUP BY status", (room,))
+    for row in rows:
+        if row["status"] in counts:
+            counts[row["status"]] = row["total"]
+    return counts
 
 
 # ===========================================================================

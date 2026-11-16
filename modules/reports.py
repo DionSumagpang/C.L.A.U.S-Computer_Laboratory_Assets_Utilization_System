@@ -1,7 +1,7 @@
 """Reports: charts, summary paragraph, report page, PDF and Excel export.
 
 Plain functions only. Room data is a dictionary:
-    room_counts = {"CpE Lab 1": {"Working": 20, "Defective": 5,
+    room_counts = {"CPE LAB 1": {"Working": 20, "Defective": 5,
                                  "Needs Maintenance": 5}, ...}
 """
 import io
