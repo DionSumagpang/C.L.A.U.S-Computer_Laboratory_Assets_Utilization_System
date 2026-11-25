@@ -1,22 +1,15 @@
 """Project C.L.A.U.S. - ALL database code lives in this file.
 
-Only plain functions are used (no classes). Every function does one job:
-
-  Low-level helpers : get_connection, run_query, run_one, run_command,
-                      where_sql, now_text
-  Setup             : create_tables, seed_admins, seed_equipment, init_db
-  Admin table       : get_admin
-  Equipment table   : get_equipment_by_room, next_pc_code, add_equipment,
-                      update_equipment, delete_equipment, get_all_equipment,
-                      get_equipment_by_id
-  Maintenance table : add_maintenance, get_all_maintenance,
-                      get_maintenance_by_equipment,
-                      check_maintenance_duplicate, update_maintenance,
-                      delete_maintenance, get_maintenance_status_counts
-  Audit log table   : add_audit_log, get_audit_logs,
-                      get_audit_values
-
-Data is passed around as plain dictionaries and lists.
+Plain functions only (no classes); data is passed around as dictionaries and lists.
+  Helpers     : get_connection, run_query, run_one, run_command, where_sql, now_text
+  Setup       : create_tables, seed_admins, seed_equipment, init_db
+  Admins      : get_admin
+  Equipment   : get_equipment_by_room, next_pc_code, add_equipment, update_equipment,
+                delete_equipment, get_all_equipment, get_equipment_by_id
+  Maintenance : add_maintenance, get_all_maintenance, get_maintenance_by_equipment,
+                check_maintenance_duplicate, update_maintenance, delete_maintenance,
+                get_maintenance_status_counts
+  Audit log   : add_audit_log, get_audit_logs, get_audit_values
 """
 import os
 import random
@@ -96,12 +89,12 @@ CREATE TABLE IF NOT EXISTS maintenance (
 EQUIPMENT_INSERT = """INSERT INTO equipment
     (pc_code, room, cpu, ram_gb, storage, gpu, os, monitor, status, last_updated)
     VALUES (?,?,?,?,?,?,?,?,?,?)"""
+EQUIPMENT_UPDATE = ("UPDATE equipment SET " + ", ".join(f"{f} = ?" for f in PC_FIELDS)
+                    + ", last_updated = ? WHERE id = ?")
 MAINTENANCE_ORDER = " ORDER BY maintenance_date DESC, id DESC"
 
 
-# ===========================================================================
-# LOW-LEVEL HELPERS
-# ===========================================================================
+# -- LOW-LEVEL HELPERS
 def get_connection():
     """Open the SQLite file. Rows can be read like dictionaries."""
     connection = sqlite3.connect(DB_PATH)
@@ -117,8 +110,9 @@ def run_query(sql, params=()):
 
 def run_one(sql, params=()):
     """Run a SELECT and return the first row as a dictionary (or None)."""
-    rows = run_query(sql, params)
-    return rows[0] if rows else None
+    with closing(get_connection()) as connection:
+        row = connection.execute(sql, params).fetchone()
+    return dict(row) if row else None
 
 
 def run_command(sql, params=(), many=False):
@@ -148,9 +142,7 @@ def now_text():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
-# ===========================================================================
-# SETUP
-# ===========================================================================
+# -- SETUP
 def create_tables():
     """Create the four tables if they do not exist yet."""
     with closing(get_connection()) as connection:
@@ -215,17 +207,13 @@ def init_db():
                       "Database created and filled with sample data")
 
 
-# ===========================================================================
-# ADMIN TABLE
-# ===========================================================================
+# -- ADMIN TABLE
 def get_admin(username):
     """Return the admin dictionary for this username, or None if not found."""
     return run_one("SELECT * FROM admins WHERE username = ?", (username,))
 
 
-# ===========================================================================
-# EQUIPMENT TABLE
-# ===========================================================================
+# -- EQUIPMENT TABLE
 def get_equipment_by_room(room):
     """Return every PC in one room (list of dictionaries), sorted by code."""
     return run_query(
@@ -252,19 +240,13 @@ def add_equipment(room, values):
     status.
     """
     pc_code = next_pc_code(room)
-    run_command(EQUIPMENT_INSERT, (pc_code, room, *(values[f] for f in PC_FIELDS),
-                                   now_text()))
+    run_command(EQUIPMENT_INSERT, (pc_code, room, *(values[f] for f in PC_FIELDS), now_text()))
     return pc_code
 
 
 def update_equipment(pc_id, values):
     """Overwrite the details of one PC with the new `values` dictionary."""
-    run_command(
-        """UPDATE equipment
-           SET cpu = ?, ram_gb = ?, storage = ?, gpu = ?, os = ?,
-               monitor = ?, status = ?, last_updated = ?
-           WHERE id = ?""",
-        (*(values[f] for f in PC_FIELDS), now_text(), pc_id))
+    run_command(EQUIPMENT_UPDATE, (*(values[f] for f in PC_FIELDS), now_text(), pc_id))
 
 
 def get_all_equipment():
@@ -288,9 +270,7 @@ def delete_equipment(pc_id):
         connection.execute("DELETE FROM equipment WHERE id = ?", (pc_id,))
 
 
-# ===========================================================================
-# MAINTENANCE TABLE
-# ===========================================================================
+# -- MAINTENANCE TABLE
 def add_maintenance(values):
     """Insert a new maintenance record and return its new database ID.
 
@@ -343,10 +323,9 @@ def get_maintenance_by_equipment(equipment_id):
 def check_maintenance_duplicate(equipment_id, maintenance_date,
                                 maintenance_type):
     """Return True if an identical record exists for this PC, date, and type."""
-    return run_one(
-        "SELECT 1 AS found FROM maintenance WHERE equipment_id = ? "
-        "AND maintenance_date = ? AND maintenance_type = ?",
-        (equipment_id, maintenance_date, maintenance_type)) is not None
+    return run_one("SELECT 1 AS found FROM maintenance WHERE equipment_id = ? "
+                   "AND maintenance_date = ? AND maintenance_type = ?",
+                   (equipment_id, maintenance_date, maintenance_type)) is not None
 
 
 def update_maintenance(record_id, values):
@@ -377,9 +356,7 @@ def get_maintenance_status_counts():
     return {status: totals.get(status, 0) for status in MAINTENANCE_STATUSES}
 
 
-# ===========================================================================
-# AUDIT LOG TABLE
-# ===========================================================================
+# -- AUDIT LOG TABLE
 def add_audit_log(username, action, room="", target="", details=""):
     """Write one line to the audit log.
 

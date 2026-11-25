@@ -1,11 +1,10 @@
-"""Project C.L.A.U.S. - shared constants and logo helpers (no database code)."""
+"""Project C.L.A.U.S. - shared constants and small UI helpers (no database code)."""
 import os
+from collections import Counter
 
 import streamlit as st
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-ASSETS_DIR = os.path.join(BASE_DIR, "assets")
-
+ASSETS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets")
 LOGO_DARK = os.path.join(ASSETS_DIR, "logo.png")             # full logo (browser tab icon)
 LOGO_MARK_DARK = os.path.join(ASSETS_DIR, "logo_mark.png")   # logo without subtitle
 LOGO_MARK_LIGHT = os.path.join(ASSETS_DIR, "logo_mark_light.png")
@@ -13,35 +12,17 @@ SUBTITLE = "Computer Laboratory Assets Utilization System"
 
 ROOMS = ["CPE LAB 1", "CPE LAB 2", "Com LAB 3"]
 STATUSES = ["Working", "Defective", "Needs Maintenance"]
-STATUS_COLORS = {
-    "Working": "#2e9e5b",
-    "Defective": "#d64545",
-    "Needs Maintenance": "#e8a317",
-}
+STATUS_COLORS = {"Working": "#2e9e5b", "Defective": "#d64545", "Needs Maintenance": "#e8a317"}
 
-# Maintenance constants
 MAINTENANCE_STATUSES = ["Pending", "In Progress", "Completed"]
-MAINTENANCE_STATUS_COLORS = {
-    "Pending": "#e8a317",
-    "In Progress": "#1b8fc9",
-    "Completed": "#2e9e5b",
-}
-MAINTENANCE_TYPES = [
-    "Hardware Repair",
-    "Software Issue",
-    "Preventive Maintenance",
-    "Component Upgrade",
-    "Network / Connectivity",
-    "Other",
-]
+MAINTENANCE_STATUS_COLORS = {"Pending": "#e8a317", "In Progress": "#1b8fc9", "Completed": "#2e9e5b"}
+MAINTENANCE_TYPES = ["Hardware Repair", "Software Issue", "Preventive Maintenance",
+                     "Component Upgrade", "Network / Connectivity", "Other"]
 
-# How many sample PCs are created per room on first run.
-# Room names must match ROOMS above. PC codes are built from the LAST word of
-# the room name (e.g. "Com LAB 3" -> L3-PC01), so keep the lab number last.
-# Each PC gets a random status (70% Working, 15% Defective,
-# 15% Needs Maintenance) and random specs - see seed_equipment() in
-# assets/database/database.py. To apply new sizes to an existing database,
-# delete assets/database/claus.db and restart the app.
+# Sample PCs created per room on first run. Room names must match ROOMS; PC codes
+# use the LAST word of the room name (e.g. "Com LAB 3" -> L3-PC01). Each PC gets
+# random specs and a random status (see seed_equipment in assets/database/database.py).
+# To apply new sizes to an existing database, delete assets/database/claus.db.
 ROOM_SIZES = {"CPE LAB 1": 16, "CPE LAB 2": 26, "Com LAB 3": 29}
 
 
@@ -69,25 +50,31 @@ def subtitle_html(font_size):
 def status_styled(df, palette):
     """Color the 'Status' column of a dataframe."""
     return df.style.map(
-        lambda value: (f"background-color:{palette[value]}33;"
-                       f"color:{palette[value]};font-weight:600"
-                       if value in palette else ""), subset=["Status"])
+        lambda value: (f"background-color:{palette[value]}33;color:{palette[value]};"
+                       "font-weight:600" if value in palette else ""), subset=["Status"])
 
 
 def count_by(records, field, choices):
     """Count the records per value of `field`, e.g. {"Pending": 2, ...}.
 
-    Every choice starts at 0; values that are not in `choices` are ignored.
+    Every choice is listed (0 when unused); values not in `choices` are ignored.
     """
-    counts = dict.fromkeys(choices, 0)
-    for record in records:
-        if record[field] in counts:
-            counts[record[field]] += 1
-    return counts
+    counts = Counter(record[field] for record in records)
+    return {choice: counts[choice] for choice in choices}
+
+
+def pick_section(labels, key):
+    """Tab-like row of choices; returns the index of the chosen label.
+
+    Unlike st.tabs (which runs EVERY tab on every click), only the chosen
+    section is run by the caller, so switching and interacting stay fast.
+    """
+    return labels.index(st.radio("Section", labels, key=key, horizontal=True,
+                                 label_visibility="collapsed"))
 
 
 def toast_and_rerun(version_key, message, icon="✅"):
-    """Bump a session counter (forces table redraw), show a toast, reload."""
+    """Bump a session counter (forces table redraw), show a toast, reload the whole app."""
     st.session_state[version_key] = st.session_state.get(version_key, 0) + 1
     st.toast(message, icon=icon)
     st.rerun()

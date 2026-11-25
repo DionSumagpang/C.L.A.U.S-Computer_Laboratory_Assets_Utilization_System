@@ -12,12 +12,6 @@ from assets.database import database as db
 from modules import get_logo_path, subtitle_html
 
 
-# Hides Streamlit's "Press Enter to submit form" hint under the login boxes.
-# Enter still submits the form. The style is only added on the login page.
-HIDE_INPUT_HINT = ("<style>[data-testid='InputInstructions'] "
-                   "{display:none}</style>")
-
-
 def check_login(username, password):
     """Check the typed username and password.
 
@@ -50,15 +44,13 @@ def login_page():
     """Draw the login screen and handle the Log in button.
 
     Steps:
-      1. Hide the input hint, then show the logo, title and the
-         username/password form.
+      1. Show the logo, title and the username/password form.
       2. When the button is pressed, call check_login inside try/except.
       3. On success: save the user in session, write LOGIN to the audit
          log, and reload the page.
       4. On each kind of failure: show the matching message and write
          LOGIN_FAILED to the audit log (except for empty fields).
     """
-    st.markdown(HIDE_INPUT_HINT, unsafe_allow_html=True)
     _, middle, _ = st.columns([1, 1.2, 1])
 
     with middle:

@@ -6,39 +6,31 @@ import pandas as pd
 import streamlit as st
 
 from assets.database import database as db
-from modules import (STATUSES, STATUS_COLORS, count_by, status_styled,
-                     toast_and_rerun)
+from modules import (ROOMS, STATUSES, STATUS_COLORS, count_by, pick_section,
+                     status_styled, toast_and_rerun)
 from modules.reports import EQUIPMENT_COLUMNS, pie_png
 
 TABLE_LABELS = {"pc_code": "PC Code", "cpu": "CPU", "ram_gb": "RAM (GB)",
                 "storage": "Storage", "gpu": "GPU", "os": "OS",
-                "monitor": "Monitor", "status": "Status",
-                "last_updated": "Last Updated"}
+                "monitor": "Monitor", "status": "Status", "last_updated": "Last Updated"}
 
 
 # -- Small helper functions
 def filter_rows(rows, search_word, status_filter):
     """Keep only the PCs that match the search word and the status filter.
 
-    Steps:
-      1. Go through every PC.
-      2. Skip it if a status filter is set and the status is different.
-      3. If a search word is set, check every column; skip the PC when
-         none of them contains the word (ignoring upper/lower case).
-      4. Otherwise keep the PC.
+    A PC is kept when its status fits the filter ("All" fits everything) and,
+    if a search word is set, any column contains it (ignoring upper/lower case).
     """
     word = search_word.lower()
     return [row for row in rows
-            if (status_filter == "All" or row["status"] == status_filter)
+            if status_filter in ("All", row["status"])
             and (not word or word in " ".join(
                 str(row[column]) for column in EQUIPMENT_COLUMNS).lower())]
 
 
 def describe_changes(old_row, new_values):
-    """Build a text like 'status: Working -> Defective; ram_gb: 8 -> 16'.
-
-    Returns an empty text when nothing changed.
-    """
+    """Text like 'status: Working -> Defective; ram_gb: 8 -> 16' ('' if unchanged)."""
     return "; ".join(f"{field}: {old_row[field]} -> {new_values[field]}"
                      for field in db.PC_FIELDS
                      if str(old_row[field]) != str(new_values[field]))
@@ -51,14 +43,11 @@ def show_pc_form(prefix, row):
     """
     col1, col2 = st.columns(2)
     cpu = col1.text_input("CPU", row.get("cpu", ""), key=prefix + "_cpu")
-    ram = col2.number_input("RAM (GB)", 1, 512, int(row.get("ram_gb", 8)),
-                            key=prefix + "_ram")
-    storage = col1.text_input("Storage", row.get("storage", ""),
-                              key=prefix + "_storage")
+    ram = col2.number_input("RAM (GB)", 1, 512, int(row.get("ram_gb", 8)), key=prefix + "_ram")
+    storage = col1.text_input("Storage", row.get("storage", ""), key=prefix + "_storage")
     gpu = col2.text_input("GPU", row.get("gpu", ""), key=prefix + "_gpu")
     os_name = col1.text_input("OS", row.get("os", ""), key=prefix + "_os")
-    monitor = col2.text_input("Monitor", row.get("monitor", ""),
-                              key=prefix + "_monitor")
+    monitor = col2.text_input("Monitor", row.get("monitor", ""), key=prefix + "_monitor")
     status = st.selectbox("Status", STATUSES, key=prefix + "_status",
                           index=STATUSES.index(row.get("status", STATUSES[0])))
     return {"cpu": cpu, "ram_gb": ram, "storage": storage, "gpu": gpu,
@@ -70,28 +59,25 @@ def show_summary(room, counts, total):
     """Draw the pie chart (left) and the four number cards (right)."""
     left, right = st.columns([1, 1.3])
     left.image(pie_png(room, counts), width="stretch")
-
+    cards = [("Total PCs", total), ("🟢 Working", counts["Working"]),
+             ("🔴 Defective", counts["Defective"]),
+             ("🟡 Needs Maintenance", counts["Needs Maintenance"])]
     with right:
-        cards = [("Total PCs", total), ("🟢 Working", counts["Working"]),
-                 ("🔴 Defective", counts["Defective"]),
-                 ("🟡 Needs Maintenance", counts["Needs Maintenance"])]
         for column, (label, value) in zip(st.columns(2) + st.columns(2), cards):
             column.metric(label, value)
 
 
-
 def show_edit_and_remove(room, row, username, slug):
-    """Draw the Edit and Remove tabs for the selected PC.
+    """Draw the Edit / Remove choice for the selected PC (only the chosen one runs).
 
-    Edit steps:  read form -> validate CPU -> find changes ->
-                 if no changes show a message, else save + audit log.
+    Edit steps:   read form -> validate CPU -> find changes ->
+                  if no changes show a message, else save + audit log.
     Remove steps: confirm button -> delete + audit log.
     """
     pc_code, key = row["pc_code"], f"{slug}_{row['id']}"
     st.markdown(f"#### Selected: `{pc_code}`")
-    tab_edit, tab_remove = st.tabs(["✏️ Edit", "🗑️ Remove"])
 
-    with tab_edit:
+    if pick_section(["✏️ Edit", "🗑️ Remove"], "pc_tab") == 0:
         new_values = show_pc_form("edit_" + key, row)
         if st.button("Save changes", type="primary", key="save_" + key):
             if new_values["cpu"].strip() == "":
@@ -103,14 +89,12 @@ def show_edit_and_remove(room, row, username, slug):
                 db.add_audit_log(username, "EDIT_PC", room, pc_code, changes)
                 toast_and_rerun("table_version", f"{pc_code} updated.")
 
-    with tab_remove:
+    else:
         st.warning(f"This will permanently delete **{pc_code}** from {room}.")
-        if st.button("Yes, remove this PC", type="primary",
-                     key="remove_" + key):
+        if st.button("Yes, remove this PC", type="primary", key="remove_" + key):
             db.delete_equipment(int(row["id"]))
-            db.add_audit_log(
-                username, "REMOVE_PC", room, pc_code,
-                f"Removed PC ({row['cpu']}, status was {row['status']})")
+            db.add_audit_log(username, "REMOVE_PC", room, pc_code,
+                             f"Removed PC ({row['cpu']}, status was {row['status']})")
             toast_and_rerun("table_version", f"{pc_code} removed.", "🗑️")
 
 
@@ -123,50 +107,51 @@ def show_add_form(room, username, slug):
                 st.error("CPU cannot be empty.")
             else:
                 new_code = db.add_equipment(room, values)
-                db.add_audit_log(
-                    username, "ADD_PC", room, new_code,
-                    f"Added PC ({values['cpu']}, status {values['status']})")
+                db.add_audit_log(username, "ADD_PC", room, new_code,
+                                 f"Added PC ({values['cpu']}, status {values['status']})")
                 toast_and_rerun("table_version", f"{new_code} added.")
 
 
-# -- Main function of this file
+# -- Main functions of this file
 def render_room(room):
-    """Draw the whole tab of one laboratory room.
+    """Draw the whole page of one laboratory room.
 
     Steps:
-      1. Read the PCs of the room from the database and count the statuses.
+      1. Read the PCs of the room and count the statuses.
       2. Show the summary (pie chart + number cards).
       3. Show the search box and status filter, then filter the PCs.
       4. Show the table; the admin can tick one row.
       5. If a row is ticked, show the Edit / Remove tabs for it.
       6. Show the 'Add a new PC' section.
     """
-    username = st.session_state["user"]["username"]
-    slug = room.replace(" ", "_")
-    st.session_state.setdefault("table_version", 0)
-
+    username, slug = st.session_state["user"]["username"], room.replace(" ", "_")
     rows = db.get_equipment_by_room(room)
     show_summary(room, count_by(rows, "status", STATUSES), len(rows))
 
     col_search, col_status = st.columns([3, 1])
-    search_word = col_search.text_input(
-        "🔍 Search", key="search_" + slug,
-        placeholder="PC code, CPU, OS, GPU, ...")
-    status_filter = col_status.selectbox(
-        "Status", ["All"] + STATUSES, key="filter_" + slug)
+    search_word = col_search.text_input("🔍 Search", key="search_" + slug,
+                                        placeholder="PC code, CPU, OS, GPU, ...")
+    status_filter = col_status.selectbox("Status", ["All"] + STATUSES, key="filter_" + slug)
     shown_rows = filter_rows(rows, search_word, status_filter)
 
     st.caption("Click the checkbox at the left of a row to edit or remove that PC.")
-    table = pd.DataFrame(shown_rows, columns=EQUIPMENT_COLUMNS).rename(
-        columns=TABLE_LABELS)
+    table = pd.DataFrame(shown_rows, columns=EQUIPMENT_COLUMNS).rename(columns=TABLE_LABELS)
     event = st.dataframe(
-        status_styled(table, STATUS_COLORS),
-        hide_index=True, width="stretch", height=380,
-        on_select="rerun", selection_mode="single-row",
-        key=f"table_{slug}_{st.session_state['table_version']}")
+        status_styled(table, STATUS_COLORS), hide_index=True, width="stretch",
+        height=380, on_select="rerun", selection_mode="single-row",
+        key=f"table_{slug}_{st.session_state.get('table_version', 0)}")
 
     selected = event.selection.rows
     if selected and selected[0] < len(shown_rows):
         show_edit_and_remove(room, shown_rows[selected[0]], username, slug)
-
     show_add_form(room, username, slug)
+
+
+@st.fragment
+def render():
+    """Room picker + the chosen room's page.
+
+    This is a fragment: clicks inside it rerun only this part (not the sidebar),
+    and only the chosen room is drawn, instead of all three rooms at once.
+    """
+    render_room(ROOMS[pick_section(["🏫 " + room for room in ROOMS], "room_tab")])

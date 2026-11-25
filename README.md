@@ -21,19 +21,19 @@ Demo password for all accounts: `Claus@2026`
 ## Program flow
 
 `main.py` -> `init_db()` -> logged in? **no:** login page / **yes:** dashboard
-(Equipment Monitoring, Maintenance Tracking, Reports, Audit Logs).
+(Equipment Monitoring, Maintenance Tracking, Equipment Summary, Audit Logs).
 
 ## Files and functions
 
 | File | Purpose | Main functions |
 |---|---|---|
 | `main.py` | Entry point | - |
-| `modules/__init__.py` | Constants, logo/subtitle helpers, shared UI helpers | `get_logo_path`, `subtitle_html`, `status_styled`, `count_by`, `toast_and_rerun` |
+| `modules/__init__.py` | Constants, logo/subtitle helpers, shared UI helpers | `get_logo_path`, `subtitle_html`, `status_styled`, `count_by`, `pick_section`, `toast_and_rerun` |
 | `modules/authentication.py` | Login / logout | `check_login`, `login_page`, `logout` |
-| `modules/dashboard.py` | Sidebar menu, page switch, audit log page | `render`, `render_audit_logs`, `action_label` |
-| `modules/equipment.py` | Room tab: view, search, edit, remove, add PCs | `render_room`, `filter_rows`, `show_edit_and_remove`, `show_add_form` |
-| `modules/maintenance.py` | Maintenance tracking, issue logs, history & PDF/Excel export | `pick_pc`, `show_facts`, `show_add_maintenance_form`, `show_all_maintenance_records`, `show_edit_record_form`, `show_delete_record_section`, `show_computer_maintenance_history`, `show_export_tab`, `build_maintenance_pdf`, `build_maintenance_excel`, `render` |
-| `modules/reports.py` | Charts, summary text, PDF and Excel export (charts/exports are cached) | `pie_png`, `bar_png`, `build_summary_paragraph`, `build_pdf`, `build_excel`, `pdf_bytes`, `excel_bytes`, `show_pdf_excel_pair`, `render` |
+| `modules/dashboard.py` | Sidebar menu, page switch, audit log page (fragment) | `render`, `render_audit_logs`, `action_label` |
+| `modules/equipment.py` | Room picker + room page: view, search, edit, remove, add PCs | `render`, `render_room`, `filter_rows`, `show_edit_and_remove`, `show_add_form` |
+| `modules/maintenance.py` | Maintenance tracking, issue logs, history & PDF/Excel export | `pick_pc`, `show_facts`, `show_add_maintenance_form`, `show_all_maintenance_records`, `show_edit_record_form`, `show_delete_record_section`, `show_computer_maintenance_history`, `show_export_tab`, `build_maintenance_pdf`, `build_maintenance_excel`, `show_sections`, `render` |
+| `modules/reports.py` | Charts, summary text, PDF and Excel export (charts/exports are cached) | `pie_png`, `bar_png`, `warm_charts`, `build_summary_paragraph`, `build_pdf`, `build_excel`, `pdf_bytes`, `excel_bytes`, `show_pdf_excel_pair`, `render` (fragment) |
 | `assets/database/database.py` | All SQLite code | `run_query`, `run_one`, `run_command`, `where_sql`, `init_db`, `get_*`, `add_*`, `update_*`, `delete_*` |
 
 ## Conventions
@@ -45,14 +45,26 @@ Demo password for all accounts: `Claus@2026`
 
 ## Speed notes
 
+- **Only the section you are looking at is run.** Room tabs (Equipment) and the
+  four Maintenance sections use `pick_section` (a tab-style row of choices)
+  instead of `st.tabs`. `st.tabs` runs the code of *every* tab on every click;
+  `pick_section` runs just the chosen one.
+- **Clicks rerun only their own page.** The Equipment, Maintenance sections,
+  Reports and Audit Logs pages are `st.fragment`s, so picking a table row,
+  switching a room/section or (de)selecting rooms in Reports no longer redraws
+  the sidebar and the rest of the app. After a save, edit or delete the whole
+  app reloads (`toast_and_rerun`) so the metric cards stay correct.
 - Charts are drawn with matplotlib's `Figure` (not `pyplot`) and saved as PNG
-  bytes; the PNGs, the PDF files and the Excel files are cached with
+  bytes; `warm_charts` draws every room combination once at app start. The PNGs, the PDF files and the Excel files are cached with
   `st.cache_data`. The cache key is the data itself (plus the admin name and the
   current minute for exports), so any edit shows up immediately while an
-  unchanged page rerun costs almost nothing.
+  unchanged rerun costs almost nothing.
 - Status counts are calculated from the rows that are already loaded
   (`count_by`) instead of asking the database again.
 - The sample data is inserted in one database transaction.
+- Trade-off: Streamlit forgets the filter/search boxes of a section that is not
+  drawn, so they reset when you switch to another section (they already reset
+  when you switch pages in the sidebar).
 
 ## Rooms and sample data
 
