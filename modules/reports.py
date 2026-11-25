@@ -125,7 +125,7 @@ def bar_png(room_counts, for_pdf=False):
     figure.tight_layout()
     if for_pdf:
         return figure_png(figure, dpi=180)
-    return figure_png(figure, dpi=200, bbox_inches="tight")
+    return figure_png(figure, dpi=120, bbox_inches="tight")
 
 
 # -- SUMMARY PARAGRAPH
