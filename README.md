@@ -28,21 +28,31 @@ Demo password for all accounts: `Claus@2026`
 | File | Purpose | Main functions |
 |---|---|---|
 | `main.py` | Entry point | - |
-| `modules/__init__.py` | Constants, logo and subtitle helpers | `get_logo_path`, `subtitle_html` |
+| `modules/__init__.py` | Constants, logo/subtitle helpers, shared UI helpers | `get_logo_path`, `subtitle_html`, `status_styled`, `count_by`, `toast_and_rerun` |
 | `modules/authentication.py` | Login / logout | `check_login`, `login_page`, `logout` |
-| `modules/dashboard.py` | Sidebar menu and page switch | `render` |
+| `modules/dashboard.py` | Sidebar menu, page switch, audit log page | `render`, `render_audit_logs`, `action_label` |
 | `modules/equipment.py` | Room tab: view, search, edit, remove, add PCs | `render_room`, `filter_rows`, `show_edit_and_remove`, `show_add_form` |
-| `modules/maintenance.py` | Maintenance tracking, issue logs, history & PDF/Excel export | `show_add_maintenance_form`, `show_all_maintenance_records`, `show_edit_record_form`, `show_delete_record_section`, `show_computer_maintenance_history`, `show_export_tab`, `build_maintenance_pdf`, `build_maintenance_excel`, `render` |
-| `modules/reports.py` | Charts, summary text, PDF and Excel export | `bar_figure`, `build_summary_paragraph`, `build_pdf`, `build_excel`, `render` |
-| `modules/audit.py` | Audit log page with filters | `render_audit_logs` |
-| `assets/database/database.py` | All SQLite code | `run_query`, `run_command`, `init_db`, `get_*`, `add_*`, `update_*`, `delete_*` |
+| `modules/maintenance.py` | Maintenance tracking, issue logs, history & PDF/Excel export | `pick_pc`, `show_facts`, `show_add_maintenance_form`, `show_all_maintenance_records`, `show_edit_record_form`, `show_delete_record_section`, `show_computer_maintenance_history`, `show_export_tab`, `build_maintenance_pdf`, `build_maintenance_excel`, `render` |
+| `modules/reports.py` | Charts, summary text, PDF and Excel export (charts/exports are cached) | `pie_png`, `bar_png`, `build_summary_paragraph`, `build_pdf`, `build_excel`, `pdf_bytes`, `excel_bytes`, `show_pdf_excel_pair`, `render` |
+| `assets/database/database.py` | All SQLite code | `run_query`, `run_one`, `run_command`, `where_sql`, `init_db`, `get_*`, `add_*`, `update_*`, `delete_*` |
 
 ## Conventions
 
 - Plain functions only (no classes); each function does one job.
 - Each docstring lists its **Steps**, which map directly to pseudocode and flowchart blocks.
 - Login errors use built-in exceptions: `ValueError` (empty field), `LookupError` (unknown user), `PermissionError` (wrong password).
-- Every login, edit, add, remove, maintenance action, and export is written to the audit log.
+- Every login, edit, add, remove, maintenance action, and export is written to the audit log. Actions are stored as short codes (e.g. `EDIT_PC`) and shown in plain words ("Edited PC") on the Audit Logs page.
+
+## Speed notes
+
+- Charts are drawn with matplotlib's `Figure` (not `pyplot`) and saved as PNG
+  bytes; the PNGs, the PDF files and the Excel files are cached with
+  `st.cache_data`. The cache key is the data itself (plus the admin name and the
+  current minute for exports), so any edit shows up immediately while an
+  unchanged page rerun costs almost nothing.
+- Status counts are calculated from the rows that are already loaded
+  (`count_by`) instead of asking the database again.
+- The sample data is inserted in one database transaction.
 
 ## Rooms and sample data
 

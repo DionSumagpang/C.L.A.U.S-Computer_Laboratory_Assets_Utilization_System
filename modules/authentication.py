@@ -12,6 +12,12 @@ from assets.database import database as db
 from modules import get_logo_path, subtitle_html
 
 
+# Hides Streamlit's "Press Enter to submit form" hint under the login boxes.
+# Enter still submits the form. The style is only added on the login page.
+HIDE_INPUT_HINT = ("<style>[data-testid='InputInstructions'] "
+                   "{display:none}</style>")
+
+
 def check_login(username, password):
     """Check the typed username and password.
 
@@ -25,19 +31,14 @@ def check_login(username, password):
       7. Otherwise return the admin's username, full name and role.
     """
     username = username.strip()
-
     if username == "" or password == "":
         raise ValueError("Please enter both username and password.")
 
     admin = db.get_admin(username)
     if admin is None:
-        raise LookupError(
-            "User '" + username + "' is not in the database. "
-            "Only authorized personnel may access C.L.A.U.S.")
-
-    password_matches = bcrypt.checkpw(password.encode(),
-                                      admin["password_hash"].encode())
-    if not password_matches:
+        raise LookupError(f"User '{username}' is not in the database. "
+                          "Only authorized personnel may access C.L.A.U.S.")
+    if not bcrypt.checkpw(password.encode(), admin["password_hash"].encode()):
         raise PermissionError("Incorrect password. Please try again.")
 
     return {"username": admin["username"],
@@ -49,17 +50,19 @@ def login_page():
     """Draw the login screen and handle the Log in button.
 
     Steps:
-      1. Show the logo, title and the username/password form.
+      1. Hide the input hint, then show the logo, title and the
+         username/password form.
       2. When the button is pressed, call check_login inside try/except.
       3. On success: save the user in session, write LOGIN to the audit
          log, and reload the page.
       4. On each kind of failure: show the matching message and write
          LOGIN_FAILED to the audit log (except for empty fields).
     """
-    empty_left, middle, empty_right = st.columns([1, 1.2, 1])
+    st.markdown(HIDE_INPUT_HINT, unsafe_allow_html=True)
+    _, middle, _ = st.columns([1, 1.2, 1])
 
     with middle:
-        a, logo_column, b = st.columns([1, 2.4, 1])
+        logo_column = st.columns([1, 2.4, 1])[1]
         logo_column.image(get_logo_path(), width="stretch")
         st.markdown(subtitle_html("1.15rem"), unsafe_allow_html=True)
         st.markdown(
@@ -86,13 +89,13 @@ def login_page():
             except LookupError as error:
                 db.add_audit_log(typed_name, "LOGIN_FAILED", "", "",
                                  "Username not found")
-                st.error("🚫 Access denied: " + str(error))
+                st.error(f"🚫 Access denied: {error}")
             except PermissionError as error:
                 db.add_audit_log(typed_name, "LOGIN_FAILED", "", "",
                                  "Wrong password")
-                st.error("🔒 " + str(error))
+                st.error(f"🔒 {error}")
             except Exception as error:
-                st.error("Unexpected error while logging in: " + str(error))
+                st.error(f"Unexpected error while logging in: {error}")
 
         with st.expander("Demo accounts"):
             st.caption("Usernames: natalieclaus, alniacapulong, "

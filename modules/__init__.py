@@ -55,9 +55,7 @@ def is_dark_theme():
 
 def get_logo_path():
     """Logo picture (without subtitle) that suits the current theme."""
-    if is_dark_theme():
-        return LOGO_MARK_DARK
-    return LOGO_MARK_LIGHT
+    return LOGO_MARK_DARK if is_dark_theme() else LOGO_MARK_LIGHT
 
 
 def subtitle_html(font_size):
@@ -65,5 +63,31 @@ def subtitle_html(font_size):
     color = "#6cc8f5" if is_dark_theme() else "#1a6fb0"
     return ("<p style='text-align:center;font-weight:700;letter-spacing:1px;"
             "text-transform:uppercase;line-height:1.3;margin:0 0 8px 0;"
-            "color:" + color + ";font-size:" + font_size + "'>"
-            + SUBTITLE + "</p>")
+            f"color:{color};font-size:{font_size}'>{SUBTITLE}</p>")
+
+
+def status_styled(df, palette):
+    """Color the 'Status' column of a dataframe."""
+    return df.style.map(
+        lambda value: (f"background-color:{palette[value]}33;"
+                       f"color:{palette[value]};font-weight:600"
+                       if value in palette else ""), subset=["Status"])
+
+
+def count_by(records, field, choices):
+    """Count the records per value of `field`, e.g. {"Pending": 2, ...}.
+
+    Every choice starts at 0; values that are not in `choices` are ignored.
+    """
+    counts = dict.fromkeys(choices, 0)
+    for record in records:
+        if record[field] in counts:
+            counts[record[field]] += 1
+    return counts
+
+
+def toast_and_rerun(version_key, message, icon="✅"):
+    """Bump a session counter (forces table redraw), show a toast, reload."""
+    st.session_state[version_key] = st.session_state.get(version_key, 0) + 1
+    st.toast(message, icon=icon)
+    st.rerun()

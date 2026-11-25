@@ -15,7 +15,13 @@ from modules import authentication, dashboard
 st.set_page_config(page_title="C.L.A.U.S.", page_icon=LOGO_DARK,
                    layout="wide")
 
-db.init_db()
+
+@st.cache_resource
+def setup():
+    db.init_db()
+
+
+setup()
 
 if "user" not in st.session_state:
     authentication.login_page()

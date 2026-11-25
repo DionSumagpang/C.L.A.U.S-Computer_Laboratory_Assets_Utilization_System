@@ -2,37 +2,34 @@
 
 Only plain functions are used (no classes). Every function does one job:
 
-  Low-level helpers : get_connection, run_query, run_command, now_text
+  Low-level helpers : get_connection, run_query, run_one, run_command,
+                      where_sql, now_text
   Setup             : create_tables, seed_admins, seed_equipment, init_db
   Admin table       : get_admin
-  Equipment table   : get_equipment_by_room, get_status_counts,
-                      next_pc_code, add_equipment, update_equipment,
-                      delete_equipment, get_all_equipment,
-                      get_equipment_by_id, get_equipment_by_code
+  Equipment table   : get_equipment_by_room, next_pc_code, add_equipment,
+                      update_equipment, delete_equipment, get_all_equipment,
+                      get_equipment_by_id
   Maintenance table : add_maintenance, get_all_maintenance,
-                      get_maintenance_by_id, get_maintenance_by_equipment,
+                      get_maintenance_by_equipment,
                       check_maintenance_duplicate, update_maintenance,
                       delete_maintenance, get_maintenance_status_counts
   Audit log table   : add_audit_log, get_audit_logs,
-                      get_audit_actions, get_audit_users
+                      get_audit_values
 
 Data is passed around as plain dictionaries and lists.
 """
 import os
 import random
 import sqlite3
+from contextlib import closing
 from datetime import datetime
 
 import bcrypt
 
-from modules import ROOM_SIZES, STATUSES
+from modules import MAINTENANCE_STATUSES, ROOM_SIZES, STATUSES
 
-DB_FOLDER = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(DB_FOLDER, "claus.db")
+DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "claus.db")
 
-# ---------------------------------------------------------------------------
-# Sample data used to fill an empty database
-# ---------------------------------------------------------------------------
 # (username, full name, role). Demo password for everyone: Claus@2026
 ADMIN_SAMPLES = [
     ("natalieclaus", "Natalie Faye C. Claus", "Laboratory Head"),
@@ -46,13 +43,60 @@ CPU_CHOICES = ["Intel Core i3-10100", "Intel Core i5-10400",
                "Intel Core i5-12400", "Intel Core i7-12700",
                "AMD Ryzen 5 5600G", "AMD Ryzen 7 5700G"]
 RAM_CHOICES = [8, 16, 16, 32]
-STORAGE_CHOICES = ["256GB SSD", "512GB SSD", "1TB HDD",
-                   "512GB SSD + 1TB HDD"]
+STORAGE_CHOICES = ["256GB SSD", "512GB SSD", "1TB HDD", "512GB SSD + 1TB HDD"]
 GPU_CHOICES = ["Integrated Graphics", "Integrated Graphics",
-               "NVIDIA GTX 1650", "NVIDIA RTX 3050",
-               "AMD Radeon RX 6500 XT"]
+               "NVIDIA GTX 1650", "NVIDIA RTX 3050", "AMD Radeon RX 6500 XT"]
 OS_CHOICES = ["Windows 10 Pro", "Windows 11 Pro", "Ubuntu 22.04 LTS"]
 MONITOR_CHOICES = ['21.5" Dell', '23.8" Acer', '24" ViewSonic', '27" LG']
+
+PC_FIELDS = ("cpu", "ram_gb", "storage", "gpu", "os", "monitor", "status")
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS admins (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT UNIQUE NOT NULL,
+    full_name TEXT NOT NULL,
+    role TEXT NOT NULL,
+    password_hash TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS equipment (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    pc_code TEXT UNIQUE NOT NULL,
+    room TEXT NOT NULL,
+    cpu TEXT,
+    ram_gb INTEGER,
+    storage TEXT,
+    gpu TEXT,
+    os TEXT,
+    monitor TEXT,
+    status TEXT NOT NULL,
+    last_updated TEXT);
+CREATE TABLE IF NOT EXISTS audit_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL,
+    username TEXT NOT NULL,
+    action TEXT NOT NULL,
+    room TEXT,
+    target TEXT,
+    details TEXT);
+CREATE TABLE IF NOT EXISTS maintenance (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    equipment_id INTEGER NOT NULL,
+    pc_code TEXT NOT NULL,
+    room TEXT NOT NULL,
+    maintenance_date TEXT NOT NULL,
+    maintenance_type TEXT NOT NULL,
+    reported_problem TEXT NOT NULL,
+    action_taken TEXT,
+    status TEXT NOT NULL,
+    created_by TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (equipment_id) REFERENCES equipment(id));
+"""
+EQUIPMENT_INSERT = """INSERT INTO equipment
+    (pc_code, room, cpu, ram_gb, storage, gpu, os, monitor, status, last_updated)
+    VALUES (?,?,?,?,?,?,?,?,?,?)"""
+MAINTENANCE_ORDER = " ORDER BY maintenance_date DESC, id DESC"
 
 
 # ===========================================================================
@@ -60,48 +104,43 @@ MONITOR_CHOICES = ['21.5" Dell', '23.8" Acer', '24" ViewSonic', '27" LG']
 # ===========================================================================
 def get_connection():
     """Open the SQLite file. Rows can be read like dictionaries."""
-    os.makedirs(DB_FOLDER, exist_ok=True)
     connection = sqlite3.connect(DB_PATH)
     connection.row_factory = sqlite3.Row
     return connection
 
 
 def run_query(sql, params=()):
-    """Run a SELECT and return the rows as a list of dictionaries.
+    """Run a SELECT and return the rows as a list of dictionaries."""
+    with closing(get_connection()) as connection:
+        return [dict(row) for row in connection.execute(sql, params)]
 
-    Steps:
-      1. Open connection.
-      2. Execute the SQL and fetch every row.
-      3. Close the connection.
-      4. Convert each row to a dictionary and return the list.
+
+def run_one(sql, params=()):
+    """Run a SELECT and return the first row as a dictionary (or None)."""
+    rows = run_query(sql, params)
+    return rows[0] if rows else None
+
+
+def run_command(sql, params=(), many=False):
+    """Run an INSERT / UPDATE / DELETE, save the change, return the new row ID.
+
+    With many=True, `params` is a list of parameter tuples (one INSERT each,
+    all saved together in one go).
     """
-    connection = get_connection()
-    try:
-        cursor = connection.execute(sql, params)
-        rows = cursor.fetchall()
-    finally:
-        connection.close()
-
-    result = []
-    for row in rows:
-        result.append(dict(row))
-    return result
+    with closing(get_connection()) as connection, connection:  # commits
+        run = connection.executemany if many else connection.execute
+        return run(sql, params).lastrowid
 
 
-def run_command(sql, params=()):
-    """Run an INSERT / UPDATE / DELETE / CREATE and save the change.
+def where_sql(filters):
+    """Join the used filters into (' WHERE a AND b', params).
 
-    Steps:
-      1. Open connection.
-      2. Execute the SQL.
-      3. Commit (save) and close the connection.
+    Each filter is a (condition, params) pair, or a falsy value when that
+    filter was not used (it is then skipped).
     """
-    connection = get_connection()
-    try:
-        connection.execute(sql, params)
-        connection.commit()
-    finally:
-        connection.close()
+    used = [f for f in filters if f]
+    sql = " WHERE " + " AND ".join(cond for cond, _ in used) if used else ""
+    return sql, [p for _, values in used for p in values]
 
 
 def now_text():
@@ -113,54 +152,14 @@ def now_text():
 # SETUP
 # ===========================================================================
 def create_tables():
-    """Create the three tables if they do not exist yet."""
-    run_command(
-        """CREATE TABLE IF NOT EXISTS admins (
-               id INTEGER PRIMARY KEY AUTOINCREMENT,
-               username TEXT UNIQUE NOT NULL,
-               full_name TEXT NOT NULL,
-               role TEXT NOT NULL,
-               password_hash TEXT NOT NULL)""")
+    """Create the four tables if they do not exist yet."""
+    with closing(get_connection()) as connection:
+        connection.executescript(SCHEMA)
 
-    run_command(
-        """CREATE TABLE IF NOT EXISTS equipment (
-               id INTEGER PRIMARY KEY AUTOINCREMENT,
-               pc_code TEXT UNIQUE NOT NULL,
-               room TEXT NOT NULL,
-               cpu TEXT,
-               ram_gb INTEGER,
-               storage TEXT,
-               gpu TEXT,
-               os TEXT,
-               monitor TEXT,
-               status TEXT NOT NULL,
-               last_updated TEXT)""")
 
-    run_command(
-        """CREATE TABLE IF NOT EXISTS audit_logs (
-               id INTEGER PRIMARY KEY AUTOINCREMENT,
-               timestamp TEXT NOT NULL,
-               username TEXT NOT NULL,
-               action TEXT NOT NULL,
-               room TEXT,
-               target TEXT,
-               details TEXT)""")
-
-    run_command(
-        """CREATE TABLE IF NOT EXISTS maintenance (
-               id INTEGER PRIMARY KEY AUTOINCREMENT,
-               equipment_id INTEGER NOT NULL,
-               pc_code TEXT NOT NULL,
-               room TEXT NOT NULL,
-               maintenance_date TEXT NOT NULL,
-               maintenance_type TEXT NOT NULL,
-               reported_problem TEXT NOT NULL,
-               action_taken TEXT,
-               status TEXT NOT NULL,
-               created_by TEXT NOT NULL,
-               created_at TEXT NOT NULL,
-               updated_at TEXT NOT NULL,
-               FOREIGN KEY (equipment_id) REFERENCES equipment(id))""")
+def is_empty(table):
+    """True when the table has no rows."""
+    return run_one(f"SELECT COUNT(*) AS total FROM {table}")["total"] == 0
 
 
 def seed_admins():
@@ -168,20 +167,14 @@ def seed_admins():
 
     Returns True if data was added, otherwise False.
     """
-    rows = run_query("SELECT COUNT(*) AS total FROM admins")
-    if rows[0]["total"] > 0:
+    if not is_empty("admins"):
         return False
-
     password_hash = bcrypt.hashpw(DEMO_PASSWORD.encode(),
                                   bcrypt.gensalt()).decode()
-    for sample in ADMIN_SAMPLES:
-        username = sample[0]
-        full_name = sample[1]
-        role = sample[2]
-        run_command(
-            "INSERT INTO admins (username, full_name, role, password_hash) "
-            "VALUES (?, ?, ?, ?)",
-            (username, full_name, role, password_hash))
+    run_command("INSERT INTO admins (username, full_name, role, password_hash) "
+                "VALUES (?, ?, ?, ?)",
+                [sample + (password_hash,) for sample in ADMIN_SAMPLES],
+                many=True)
     return True
 
 
@@ -190,27 +183,19 @@ def seed_equipment():
 
     Returns True if data was added, otherwise False.
     """
-    rows = run_query("SELECT COUNT(*) AS total FROM equipment")
-    if rows[0]["total"] > 0:
+    if not is_empty("equipment"):
         return False
-
-    for room in ROOM_SIZES:
-        lab_number = room.split()[-1]
-        number_of_pcs = ROOM_SIZES[room]
-
-        for pc_number in range(1, number_of_pcs + 1):
-            pc_code = "L" + lab_number + "-PC" + str(pc_number).zfill(2)
-            # 70% working, 15% defective, 15% needs maintenance
-            status = random.choices(STATUSES, weights=[70, 15, 15])[0]
-            run_command(
-                """INSERT INTO equipment
-                   (pc_code, room, cpu, ram_gb, storage, gpu, os, monitor,
-                    status, last_updated)
-                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
-                (pc_code, room, random.choice(CPU_CHOICES),
-                 random.choice(RAM_CHOICES), random.choice(STORAGE_CHOICES),
-                 random.choice(GPU_CHOICES), random.choice(OS_CHOICES),
-                 random.choice(MONITOR_CHOICES), status, now_text()))
+    stamp = now_text()
+    rows = [
+        (f"L{room.split()[-1]}-PC{number:02d}", room,
+         random.choice(CPU_CHOICES), random.choice(RAM_CHOICES),
+         random.choice(STORAGE_CHOICES), random.choice(GPU_CHOICES),
+         random.choice(OS_CHOICES), random.choice(MONITOR_CHOICES),
+         # 70% working, 15% defective, 15% needs maintenance
+         random.choices(STATUSES, weights=[70, 15, 15])[0], stamp)
+        for room, size in ROOM_SIZES.items()
+        for number in range(1, size + 1)]
+    run_command(EQUIPMENT_INSERT, rows, many=True)
     return True
 
 
@@ -235,10 +220,7 @@ def init_db():
 # ===========================================================================
 def get_admin(username):
     """Return the admin dictionary for this username, or None if not found."""
-    rows = run_query("SELECT * FROM admins WHERE username = ?", (username,))
-    if len(rows) == 0:
-        return None
-    return rows[0]
+    return run_one("SELECT * FROM admins WHERE username = ?", (username,))
 
 
 # ===========================================================================
@@ -250,27 +232,6 @@ def get_equipment_by_room(room):
         "SELECT * FROM equipment WHERE room = ? ORDER BY pc_code", (room,))
 
 
-def get_status_counts(room):
-    """Return how many PCs are in each status, e.g.
-    {"Working": 20, "Defective": 3, "Needs Maintenance": 2}.
-
-    Steps:
-      1. Start every status at 0.
-      2. Ask the database to count PCs per status for this room.
-      3. Copy the counts into the dictionary.
-    """
-    counts = {}
-    for status in STATUSES:
-        counts[status] = 0
-
-    rows = run_query(
-        "SELECT status, COUNT(*) AS total FROM equipment "
-        "WHERE room = ? GROUP BY status", (room,))
-    for row in rows:
-        counts[row["status"]] = row["total"]
-    return counts
-
-
 def next_pc_code(room):
     """Build the next free PC code for a room, e.g. L1-PC31.
 
@@ -279,16 +240,9 @@ def next_pc_code(room):
       2. Find the biggest PC number.
       3. Return the room's lab number + (biggest + 1).
     """
-    lab_number = room.split()[-1]
-    biggest = 0
-    for pc in get_equipment_by_room(room):
-        try:
-            number = int(pc["pc_code"].split("PC")[-1])
-            if number > biggest:
-                biggest = number
-        except (ValueError, IndexError):
-            continue
-    return "L" + lab_number + "-PC" + str(biggest + 1).zfill(2)
+    numbers = [int(digits) for pc in get_equipment_by_room(room)
+               if (digits := pc["pc_code"].split("PC")[-1]).isdecimal()]
+    return f"L{room.split()[-1]}-PC{max(numbers, default=0) + 1:02d}"
 
 
 def add_equipment(room, values):
@@ -298,14 +252,8 @@ def add_equipment(room, values):
     status.
     """
     pc_code = next_pc_code(room)
-    run_command(
-        """INSERT INTO equipment
-           (pc_code, room, cpu, ram_gb, storage, gpu, os, monitor, status,
-            last_updated)
-           VALUES (?,?,?,?,?,?,?,?,?,?)""",
-        (pc_code, room, values["cpu"], values["ram_gb"], values["storage"],
-         values["gpu"], values["os"], values["monitor"], values["status"],
-         now_text()))
+    run_command(EQUIPMENT_INSERT, (pc_code, room, *(values[f] for f in PC_FIELDS),
+                                   now_text()))
     return pc_code
 
 
@@ -316,9 +264,7 @@ def update_equipment(pc_id, values):
            SET cpu = ?, ram_gb = ?, storage = ?, gpu = ?, os = ?,
                monitor = ?, status = ?, last_updated = ?
            WHERE id = ?""",
-        (values["cpu"], values["ram_gb"], values["storage"], values["gpu"],
-         values["os"], values["monitor"], values["status"], now_text(),
-         pc_id))
+        (*(values[f] for f in PC_FIELDS), now_text(), pc_id))
 
 
 def get_all_equipment():
@@ -328,29 +274,18 @@ def get_all_equipment():
 
 def get_equipment_by_id(pc_id):
     """Return one PC dictionary by its database ID, or None if not found."""
-    rows = run_query("SELECT * FROM equipment WHERE id = ?", (pc_id,))
-    if len(rows) == 0:
-        return None
-    return rows[0]
-
-
-def get_equipment_by_code(pc_code):
-    """Return one PC dictionary by its PC code, or None if not found."""
-    rows = run_query("SELECT * FROM equipment WHERE pc_code = ?", (pc_code,))
-    if len(rows) == 0:
-        return None
-    return rows[0]
+    return run_one("SELECT * FROM equipment WHERE id = ?", (pc_id,))
 
 
 def delete_equipment(pc_id):
     """Remove one PC and all its maintenance records from the database.
 
-    Steps:
-      1. Delete all maintenance logs linked to this PC (prevents orphan records).
-      2. Delete the PC record from the equipment table.
+    Both deletes are saved together, so no orphan maintenance logs remain.
     """
-    run_command("DELETE FROM maintenance WHERE equipment_id = ?", (pc_id,))
-    run_command("DELETE FROM equipment WHERE id = ?", (pc_id,))
+    with closing(get_connection()) as connection, connection:  # commits
+        connection.execute("DELETE FROM maintenance WHERE equipment_id = ?",
+                           (pc_id,))
+        connection.execute("DELETE FROM equipment WHERE id = ?", (pc_id,))
 
 
 # ===========================================================================
@@ -362,31 +297,18 @@ def add_maintenance(values):
     `values` is a dictionary with: equipment_id, pc_code, room,
     maintenance_date, maintenance_type, reported_problem, action_taken,
     status, created_by.
-
-    Steps:
-      1. Get current date and time for timestamps.
-      2. Open a connection and execute INSERT.
-      3. Commit and return the generated ID.
     """
     now = now_text()
-    connection = get_connection()
-    try:
-        cursor = connection.cursor()
-        cursor.execute(
-            """INSERT INTO maintenance
-               (equipment_id, pc_code, room, maintenance_date,
-                maintenance_type, reported_problem, action_taken,
-                status, created_by, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (values["equipment_id"], values["pc_code"], values["room"],
-             values["maintenance_date"], values["maintenance_type"],
-             values["reported_problem"], values.get("action_taken", ""),
-             values["status"], values["created_by"], now, now))
-        record_id = cursor.lastrowid
-        connection.commit()
-        return record_id
-    finally:
-        connection.close()
+    return run_command(
+        """INSERT INTO maintenance
+           (equipment_id, pc_code, room, maintenance_date, maintenance_type,
+            reported_problem, action_taken, status, created_by, created_at,
+            updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (values["equipment_id"], values["pc_code"], values["room"],
+         values["maintenance_date"], values["maintenance_type"],
+         values["reported_problem"], values.get("action_taken", ""),
+         values["status"], values["created_by"], now, now))
 
 
 def get_all_maintenance(status_filter="All", type_filter="All",
@@ -394,84 +316,41 @@ def get_all_maintenance(status_filter="All", type_filter="All",
     """Return maintenance records that match the filters, newest date first.
 
     Steps:
-      1. Start with an empty list of SQL conditions and parameters.
-      2. If a status filter is selected, append a condition for status.
-      3. If a type filter is selected, append a condition for maintenance_type.
-      4. If a room filter is selected, append a condition for room.
-      5. If a search query is given, search in pc_code, reported_problem,
-         action_taken, or created_by.
-      6. Query the database, order by maintenance_date DESC, id DESC.
+      1. Add a condition for every filter that is not "All" / empty
+         (the search looks in pc_code, reported_problem, action_taken and
+         created_by).
+      2. Query the database, ordered by maintenance_date DESC, id DESC.
     """
-    conditions = []
-    params = []
-
-    if status_filter != "All":
-        conditions.append("status = ?")
-        params.append(status_filter)
-
-    if type_filter != "All":
-        conditions.append("maintenance_type = ?")
-        params.append(type_filter)
-
-    if room_filter != "All":
-        conditions.append("room = ?")
-        params.append(room_filter)
-
-    if search.strip() != "":
-        conditions.append(
-            "(pc_code LIKE ? OR reported_problem LIKE ? OR action_taken LIKE ? OR created_by LIKE ?)")
-        pattern = "%" + search.strip() + "%"
-        params.append(pattern)
-        params.append(pattern)
-        params.append(pattern)
-        params.append(pattern)
-
-    sql = "SELECT * FROM maintenance"
-    if len(conditions) > 0:
-        sql = sql + " WHERE " + " AND ".join(conditions)
-    sql = sql + " ORDER BY maintenance_date DESC, id DESC"
-
-    return run_query(sql, tuple(params))
-
-
-def get_maintenance_by_id(record_id):
-    """Return one maintenance record dictionary by ID, or None if not found."""
-    rows = run_query("SELECT * FROM maintenance WHERE id = ?", (record_id,))
-    if len(rows) == 0:
-        return None
-    return rows[0]
+    search = search.strip()
+    sql, params = where_sql([
+        status_filter != "All" and ("status = ?", [status_filter]),
+        type_filter != "All" and ("maintenance_type = ?", [type_filter]),
+        room_filter != "All" and ("room = ?", [room_filter]),
+        search != "" and (
+            "(pc_code LIKE ? OR reported_problem LIKE ? OR "
+            "action_taken LIKE ? OR created_by LIKE ?)", [f"%{search}%"] * 4),
+    ])
+    return run_query("SELECT * FROM maintenance" + sql + MAINTENANCE_ORDER,
+                     params)
 
 
 def get_maintenance_by_equipment(equipment_id):
     """Return all maintenance records for one computer, sorted newest first."""
-    return run_query(
-        "SELECT * FROM maintenance WHERE equipment_id = ? "
-        "ORDER BY maintenance_date DESC, id DESC",
-        (equipment_id,))
+    return run_query("SELECT * FROM maintenance WHERE equipment_id = ?"
+                     + MAINTENANCE_ORDER, (equipment_id,))
 
 
-def check_maintenance_duplicate(equipment_id, maintenance_date, maintenance_type, exclude_id=None):
+def check_maintenance_duplicate(equipment_id, maintenance_date,
+                                maintenance_type):
     """Return True if an identical record exists for this PC, date, and type."""
-    if exclude_id is not None:
-        rows = run_query(
-            "SELECT id FROM maintenance "
-            "WHERE equipment_id = ? AND maintenance_date = ? AND maintenance_type = ? AND id != ?",
-            (equipment_id, maintenance_date, maintenance_type, exclude_id))
-    else:
-        rows = run_query(
-            "SELECT id FROM maintenance "
-            "WHERE equipment_id = ? AND maintenance_date = ? AND maintenance_type = ?",
-            (equipment_id, maintenance_date, maintenance_type))
-    return len(rows) > 0
+    return run_one(
+        "SELECT 1 AS found FROM maintenance WHERE equipment_id = ? "
+        "AND maintenance_date = ? AND maintenance_type = ?",
+        (equipment_id, maintenance_date, maintenance_type)) is not None
 
 
 def update_maintenance(record_id, values):
-    """Overwrite the details of one maintenance record with new values.
-
-    Steps:
-      1. Prepare the updated values and current timestamp.
-      2. Execute UPDATE query matching the record's ID.
-    """
+    """Overwrite the details of one maintenance record with new values."""
     run_command(
         """UPDATE maintenance
            SET maintenance_date = ?, maintenance_type = ?,
@@ -488,23 +367,14 @@ def delete_maintenance(record_id):
     run_command("DELETE FROM maintenance WHERE id = ?", (record_id,))
 
 
-def get_maintenance_status_counts(room="All"):
-    """Return dictionary of how many maintenance records are in each status.
+def get_maintenance_status_counts():
+    """Return how many maintenance records are in each status.
 
     Returns: {'Pending': x, 'In Progress': y, 'Completed': z}
     """
-    counts = {"Pending": 0, "In Progress": 0, "Completed": 0}
-    if room == "All":
-        rows = run_query(
-            "SELECT status, COUNT(*) AS total FROM maintenance GROUP BY status")
-    else:
-        rows = run_query(
-            "SELECT status, COUNT(*) AS total FROM maintenance "
-            "WHERE room = ? GROUP BY status", (room,))
-    for row in rows:
-        if row["status"] in counts:
-            counts[row["status"]] = row["total"]
-    return counts
+    totals = {row["status"]: row["total"] for row in run_query(
+        "SELECT status, COUNT(*) AS total FROM maintenance GROUP BY status")}
+    return {status: totals.get(status, 0) for status in MAINTENANCE_STATUSES}
 
 
 # ===========================================================================
@@ -526,56 +396,24 @@ def add_audit_log(username, action, room="", target="", details=""):
         print("Audit log failed:", error)
 
 
-def get_audit_logs(action_filter="All", user_filter="All", search="",
-                   limit=500):
-    """Return audit log entries (newest first) that match the filters.
+def get_audit_logs(action_filter="All", user_filter="All", search=""):
+    """Return the latest 500 audit log entries (newest first) that match.
 
     Steps:
-      1. Start with a list of conditions that is empty.
-      2. Add a condition for every filter the user actually used.
-      3. Join the conditions with AND, sort newest first, apply the limit.
+      1. Add a condition for every filter the user actually used.
+      2. Join the conditions with AND, sort newest first, keep 500.
     """
-    conditions = []
-    params = []
-
-    if action_filter != "All":
-        conditions.append("action = ?")
-        params.append(action_filter)
-
-    if user_filter != "All":
-        conditions.append("username = ?")
-        params.append(user_filter)
-
-    if search != "":
-        conditions.append("(details LIKE ? OR target LIKE ? OR room LIKE ?)")
-        pattern = "%" + search + "%"
-        params.append(pattern)
-        params.append(pattern)
-        params.append(pattern)
-
-    sql = "SELECT * FROM audit_logs"
-    if len(conditions) > 0:
-        sql = sql + " WHERE " + " AND ".join(conditions)
-    sql = sql + " ORDER BY id DESC LIMIT ?"
-    params.append(limit)
-
-    return run_query(sql, tuple(params))
+    sql, params = where_sql([
+        action_filter != "All" and ("action = ?", [action_filter]),
+        user_filter != "All" and ("username = ?", [user_filter]),
+        search != "" and ("(details LIKE ? OR target LIKE ? OR room LIKE ?)",
+                          [f"%{search}%"] * 3),
+    ])
+    return run_query("SELECT * FROM audit_logs" + sql
+                     + " ORDER BY id DESC LIMIT 500", params)
 
 
-def get_audit_actions():
-    """Distinct action names found in the audit log (for the filter box)."""
-    rows = run_query("SELECT DISTINCT action FROM audit_logs ORDER BY action")
-    names = []
-    for row in rows:
-        names.append(row["action"])
-    return names
-
-
-def get_audit_users():
-    """Distinct usernames found in the audit log (for the filter box)."""
-    rows = run_query(
-        "SELECT DISTINCT username FROM audit_logs ORDER BY username")
-    names = []
-    for row in rows:
-        names.append(row["username"])
-    return names
+def get_audit_values(column):
+    """Distinct values of 'action' or 'username' in the audit log (filter boxes)."""
+    return [row[column] for row in run_query(
+        f"SELECT DISTINCT {column} FROM audit_logs ORDER BY {column}")]
