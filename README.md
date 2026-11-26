@@ -54,14 +54,22 @@ Demo password for all accounts: `Claus@2026`
   switching a room/section or (de)selecting rooms in Reports no longer redraws
   the sidebar and the rest of the app. After a save, edit or delete the whole
   app reloads (`toast_and_rerun`) so the metric cards stay correct.
+- **Typing does not rerun the page.** The Edit PC and Add PC boxes are in an
+  `st.form`: nothing is sent to Python until *Save changes* / *Add PC* is pressed
+  (before, every box that lost focus reran the whole room page).
 - Charts are drawn with matplotlib's `Figure` (not `pyplot`) and saved as PNG
-  bytes; `warm_charts` draws every room combination once at app start. The PNGs, the PDF files and the Excel files are cached with
+  bytes; `warm_charts` (called from `main.setup`) draws the room pies and the
+  all-rooms bar chart once at app start, so the first visits are instant. The PNGs, the PDF files and the Excel files are cached with
   `st.cache_data`. The cache key is the data itself (plus the admin name and the
   current minute for exports), so any edit shows up immediately while an
   unchanged rerun costs almost nothing.
 - Status counts are calculated from the rows that are already loaded
   (`count_by`) instead of asking the database again.
 - The sample data is inserted in one database transaction.
+- Three database indexes (`idx_audit_action`, `idx_audit_username`,
+  `idx_maintenance_pc`) are created by `init_db` (`IF NOT EXISTS`, existing rows
+  and columns are untouched). They keep the Audit Logs filter lists and the
+  per-PC maintenance lookups fast as the tables grow.
 - Trade-off: Streamlit forgets the filter/search boxes of a section that is not
   drawn, so they reset when you switch to another section (they already reset
   when you switch pages in the sidebar).
