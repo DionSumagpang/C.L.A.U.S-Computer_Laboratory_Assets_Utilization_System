@@ -36,22 +36,26 @@ def describe_changes(old_row, new_values):
                      if str(old_row[field]) != str(new_values[field]))
 
 
-def show_pc_form(prefix, row):
-    """Draw the PC input boxes and return what the admin typed as a dict.
+def show_pc_form(prefix, row, button, **button_options):
+    """Draw the PC input boxes and a submit button; return (values, pressed).
 
-    `row` holds the current values (use an empty dict for a new PC).
+    `values` is what the admin typed, as a dict. `row` holds the current values
+    (use an empty dict for a new PC). The boxes sit in a form, so nothing is
+    sent to Python (and the page does not rerun) until the button is pressed.
     """
-    col1, col2 = st.columns(2)
-    cpu = col1.text_input("CPU", row.get("cpu", ""), key=prefix + "_cpu")
-    ram = col2.number_input("RAM (GB)", 1, 512, int(row.get("ram_gb", 8)), key=prefix + "_ram")
-    storage = col1.text_input("Storage", row.get("storage", ""), key=prefix + "_storage")
-    gpu = col2.text_input("GPU", row.get("gpu", ""), key=prefix + "_gpu")
-    os_name = col1.text_input("OS", row.get("os", ""), key=prefix + "_os")
-    monitor = col2.text_input("Monitor", row.get("monitor", ""), key=prefix + "_monitor")
-    status = st.selectbox("Status", STATUSES, key=prefix + "_status",
-                          index=STATUSES.index(row.get("status", STATUSES[0])))
+    with st.form(prefix + "_form", border=False):
+        col1, col2 = st.columns(2)
+        cpu = col1.text_input("CPU", row.get("cpu", ""), key=prefix + "_cpu")
+        ram = col2.number_input("RAM (GB)", 1, 512, int(row.get("ram_gb", 8)), key=prefix + "_ram")
+        storage = col1.text_input("Storage", row.get("storage", ""), key=prefix + "_storage")
+        gpu = col2.text_input("GPU", row.get("gpu", ""), key=prefix + "_gpu")
+        os_name = col1.text_input("OS", row.get("os", ""), key=prefix + "_os")
+        monitor = col2.text_input("Monitor", row.get("monitor", ""), key=prefix + "_monitor")
+        status = st.selectbox("Status", STATUSES, key=prefix + "_status",
+                              index=STATUSES.index(row.get("status", STATUSES[0])))
+        pressed = st.form_submit_button(button, **button_options)
     return {"cpu": cpu, "ram_gb": ram, "storage": storage, "gpu": gpu,
-            "os": os_name, "monitor": monitor, "status": status}
+            "os": os_name, "monitor": monitor, "status": status}, pressed
 
 
 # -- Page sections
@@ -78,8 +82,8 @@ def show_edit_and_remove(room, row, username, slug):
     st.markdown(f"#### Selected: `{pc_code}`")
 
     if pick_section(["✏️ Edit", "🗑️ Remove"], "pc_tab") == 0:
-        new_values = show_pc_form("edit_" + key, row)
-        if st.button("Save changes", type="primary", key="save_" + key):
+        new_values, pressed = show_pc_form("edit_" + key, row, "Save changes", type="primary")
+        if pressed:
             if new_values["cpu"].strip() == "":
                 st.error("CPU cannot be empty.")
             elif (changes := describe_changes(row, new_values)) == "":
@@ -101,8 +105,8 @@ def show_edit_and_remove(room, row, username, slug):
 def show_add_form(room, username, slug):
     """Draw the 'Add a new PC' section and save the new PC when asked."""
     with st.expander(f"➕ Add a new PC to {room}"):
-        values = show_pc_form("add_" + slug, {})
-        if st.button("Add PC", key="add_button_" + slug):
+        values, pressed = show_pc_form("add_" + slug, {}, "Add PC")
+        if pressed:
             if values["cpu"].strip() == "":
                 st.error("CPU cannot be empty.")
             else:

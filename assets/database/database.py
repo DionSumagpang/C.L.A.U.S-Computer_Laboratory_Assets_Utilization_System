@@ -85,6 +85,11 @@ CREATE TABLE IF NOT EXISTS maintenance (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     FOREIGN KEY (equipment_id) REFERENCES equipment(id));
+-- Indexes only speed up reads (audit filter lists, per-PC maintenance lookups).
+CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_logs(action);
+CREATE INDEX IF NOT EXISTS idx_audit_username ON audit_logs(username);
+CREATE INDEX IF NOT EXISTS idx_maintenance_pc
+    ON maintenance(equipment_id, maintenance_date, maintenance_type);
 """
 EQUIPMENT_INSERT = """INSERT INTO equipment
     (pc_code, room, cpu, ram_gb, storage, gpu, os, monitor, status, last_updated)
@@ -144,7 +149,7 @@ def now_text():
 
 # -- SETUP
 def create_tables():
-    """Create the four tables if they do not exist yet."""
+    """Create the four tables and their indexes if they do not exist yet."""
     with closing(get_connection()) as connection:
         connection.executescript(SCHEMA)
 

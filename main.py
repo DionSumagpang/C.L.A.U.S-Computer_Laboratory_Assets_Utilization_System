@@ -10,7 +10,7 @@ import streamlit as st
 
 from assets.database import database as db
 from modules import LOGO_DARK
-from modules import authentication, dashboard
+from modules import authentication, dashboard, reports
 
 st.set_page_config(page_title="C.L.A.U.S.", page_icon=LOGO_DARK,
                    layout="wide")
@@ -19,6 +19,7 @@ st.set_page_config(page_title="C.L.A.U.S.", page_icon=LOGO_DARK,
 @st.cache_resource
 def setup():
     db.init_db()
+    reports.warm_charts()  # draw the first charts now, not while the admin waits
 
 
 setup()

@@ -4,15 +4,13 @@ Plain functions only. Room data is a dictionary:
     room_counts = {"CPE LAB 1": {"Working": 20, "Defective": 5, "Needs Maintenance": 5}, ...}
 
 Speed: charts are drawn with matplotlib's Figure (no pyplot); the PNGs, PDF and
-Excel files are cached with st.cache_data, every room combination is drawn once
-at app start (warm_charts), and the report page is a fragment, so ticking a room
+Excel files are cached with st.cache_data, the room pies and the all-rooms bar
+chart are drawn once at app start (warm_charts), and the report page is a fragment, so ticking a room
 reruns only the page instead of the whole app.
 """
 import io
 from datetime import datetime
 from xml.sax.saxutils import escape
-
-from itertools import combinations
 
 import pandas as pd
 import streamlit as st
@@ -127,20 +125,18 @@ def bar_png(room_counts, for_pdf=False):
     return figure_png(figure, dpi=180 if for_pdf else 110)
 
 
-@st.cache_resource(show_spinner=False)
 def warm_charts():
-    """Draw the pie of every room and the bar chart of every room combination once.
+    """Draw the pie of every room and the all-rooms bar chart once (called by main.setup).
 
-    Runs once when the app starts, so ticking / removing a room in Reports and
-    opening a room tab in Equipment find their picture already in the cache.
+    These are the first pictures an admin opens (the Equipment room tabs and
+    the Reports page), so they are already cached instead of being drawn
+    while the admin waits. Other room combinations are drawn when first used.
     """
     all_counts = {room: count_by(db.get_equipment_by_room(room), "status", STATUSES)
                   for room in ROOMS}
     for room, counts in all_counts.items():
         pie_png(room, counts)
-    for size in range(1, len(ROOMS) + 1):
-        for chosen in combinations(ROOMS, size):
-            bar_png({room: all_counts[room] for room in chosen})
+    bar_png(all_counts)
 
 
 # -- SUMMARY PARAGRAPH
