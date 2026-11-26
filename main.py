@@ -14,7 +14,7 @@ from modules import authentication, dashboard, reports
 
 st.set_page_config(page_title="C.L.A.U.S.", page_icon=LOGO_DARK,
                    layout="wide")
-
+st.html("<style>[data-testid='InputInstructions']{display:none}</style>")
 
 @st.cache_resource
 def setup():
