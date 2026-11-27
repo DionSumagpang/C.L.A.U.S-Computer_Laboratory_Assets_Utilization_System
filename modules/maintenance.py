@@ -47,6 +47,7 @@ HISTORY_LABELS = {
     "status": "Status", "created_by": "Logged By"}
 STATUS_BADGES = {"Pending": "🟡 Pending", "In Progress": "🔵 In Progress",
                  "Completed": "🟢 Completed"}
+UNRESOLVED = MAINTENANCE_STATUSES[:2]  # Pending, In Progress
 SECTIONS = ["📋 All Records", "➕ Add Maintenance Record",
             "🔍 History per Computer", "📤 Export Report"]
 
@@ -112,11 +113,18 @@ def pick_pc(all_pcs, rooms, room_label, pc_label, key, option_text):
     """
     col_room, col_pc = st.columns([1, 2])
     room = col_room.selectbox(room_label, rooms, key=key + "_room")
-    options = {option_text(pc): pc for pc in all_pcs if room in ("All Rooms", pc["room"])}
+    options = {pc["id"]: pc for pc in all_pcs if room in ("All Rooms", pc["room"])}
     if not options:
         st.info("No computers found in " + room)
         return None
-    return options[col_pc.selectbox(pc_label, list(options), key=key + "_pc")]
+    return options[col_pc.selectbox(pc_label, list(options), key=key + "_pc",
+                                    format_func=lambda pc_id: option_text(options[pc_id]))]
+
+
+def pc_history(pc):
+    """Maintenance records of exactly this PC (matched by ID, then room and code checked)."""
+    return [r for r in db.get_maintenance_by_equipment(pc["id"])
+            if r["room"] == pc["room"] and r["pc_code"] == pc["pc_code"]]
 
 
 def show_status_metrics(counts, total, total_label, done_label):
@@ -128,14 +136,100 @@ def show_status_metrics(counts, total, total_label, done_label):
 
 
 # -- 2. SECTION: ADD MAINTENANCE RECORD
+def save_maintenance(pc, entry, target, username):
+    """Create a new record (target is None) or merge `entry` into the open record `target`.
+
+    Merging keeps the record ID, original date and type. The new problem and
+    action are appended with a '[date | type]' stamp, so earlier text is never
+    lost, and the status never moves backwards (In Progress is not reset to Pending).
+    """
+    stamp = f"[{entry['maintenance_date']} | {entry['maintenance_type']}] "
+    try:
+        if target is None:
+            record_id = db.add_maintenance(
+                dict(entry, pc_code=pc["pc_code"], room=pc["room"], created_by=username))
+            status, message = entry["status"], f"Maintenance record #{record_id} created for {pc['pc_code']}"
+            db.add_audit_log(username, "ADD_MAINTENANCE", pc["room"], pc["pc_code"],
+                             f"Type: {entry['maintenance_type']} | Status: {status} | "
+                             f"Problem: {entry['reported_problem'][:60]}")
+        else:
+            record_id = target["id"]
+            status = max(target["status"], entry["status"], key=MAINTENANCE_STATUSES.index)
+            join = lambda old, new: "\n\n".join(t for t in (old or "", stamp + new if new else "") if t)
+            db.update_maintenance(record_id, {
+                "maintenance_date": target["maintenance_date"],
+                "maintenance_type": target["maintenance_type"],
+                "reported_problem": join(target["reported_problem"], entry["reported_problem"]),
+                "action_taken": join(target["action_taken"], entry["action_taken"]),
+                "status": status})
+            message = f"Existing issue #{record_id} for {pc['pc_code']} was updated (no duplicate created)"
+            db.add_audit_log(username, "EDIT_MAINTENANCE", pc["room"], pc["pc_code"],
+                             f"New report merged into record #{record_id} -> Status: {status} | "
+                             f"Problem: {entry['reported_problem'][:60]}")
+        if entry["update_pc_status"] and status != "Completed":
+            db.update_equipment(pc["id"], dict(pc, status="Needs Maintenance"))
+        st.session_state.pop("maint_entry", None)
+        toast_and_rerun("maint_table_version", message)
+    except Exception as error:
+        st.error("Failed to save maintenance record: " + str(error))
+
+
+def handle_submission(pc, entry, username):
+    """Decide what to do with a submitted report (re-run until the user chooses).
+
+    Steps:
+      1. Read the PC's own history once; stop if the same report was already saved.
+      2. Find unresolved records (Pending / In Progress) of this PC, whatever their date.
+      3. None found -> create the record. Otherwise show the existing record(s) and
+         let the user choose: A. update the existing issue, B. create a new report.
+    """
+    history = pc_history(pc)
+    stamped = f"[{entry['maintenance_date']} | {entry['maintenance_type']}] {entry['reported_problem']}"
+    if any(stamped in r["reported_problem"] or (
+            r["maintenance_date"] == entry["maintenance_date"]
+            and r["maintenance_type"] == entry["maintenance_type"]
+            and r["reported_problem"] == entry["reported_problem"]) for r in history):
+        st.session_state.pop("maint_entry", None)
+        st.error(f"⚠️ Accidental duplicate prevented: this same report for {pc['pc_code']} "
+                 f"on {entry['maintenance_date']} is already recorded.")
+        return
+    open_issues = [r for r in history if r["status"] in UNRESOLVED]
+    if not open_issues:
+        save_maintenance(pc, entry, None, username)
+        return
+
+    st.warning(f"⚠️ {pc['pc_code']} already has {len(open_issues)} unresolved maintenance "
+               f"record(s). Is your new report about the same ongoing issue?")
+    target = open_issues[0]
+    if len(open_issues) > 1:
+        labels = {f"#{r['id']} · {r['maintenance_date']} · {r['maintenance_type']} · {r['status']}": r
+                  for r in open_issues}
+        same_type = next((i for i, r in enumerate(open_issues)
+                          if r["maintenance_type"] == entry["maintenance_type"]), 0)
+        target = labels[st.selectbox("Existing unresolved record", list(labels), index=same_type,
+                                     key=f"maint_open_{pc['id']}")]
+    st.markdown("**Existing record:**")
+    show_record_details(target)
+    st.markdown("**Your new report (not saved yet):**")
+    st.info(f"{entry['maintenance_date']} · {entry['maintenance_type']} · {entry['status']}"
+            f" — {entry['reported_problem']}")
+    col_update, col_new = st.columns(2)
+    if col_update.button("A. Update Existing Issue", type="primary", width="stretch"):
+        save_maintenance(pc, entry, target, username)
+    if col_new.button("B. Create New Maintenance Report", width="stretch"):
+        save_maintenance(pc, entry, None, username)
+
+
 def show_add_maintenance_form(username):
     """Form to record a new computer issue and maintenance activity.
 
     Steps:
       1. Load all computers; let the user pick a room, then a computer.
       2. Collect date, issue type, status, problem and initial action.
-      3. On submit, validate the inputs and check for a duplicate record.
-      4. Insert the record, write the audit log, notify the user.
+      3. On submit, validate the inputs.
+      4. Check for an unresolved record of the same PC, then create a new record
+         or update the existing one (see handle_submission), write the audit log
+         and notify the user.
     """
     st.markdown("### ➕ Record New Computer Issue / Maintenance")
     st.caption("Log hardware or software issues, scheduled maintenance, or repairs.")
@@ -154,49 +248,44 @@ def show_add_maintenance_form(username):
                     ("OS", pc["os"]), ("CPU", pc["cpu"]), ("RAM", f"{pc['ram_gb']} GB"),
                     ("Storage", pc["storage"]), ("GPU", pc["gpu"])])
 
-    with st.form("form_add_maintenance"):
+    # Field keys include the PC and the save counter, so text typed for one PC (or left
+    # over from the last saved report) never shows up in the form of another PC.
+    k = f"{pc['id']}_{st.session_state.get('maint_table_version', 0)}"
+    with st.form("form_add_maintenance_" + k):
         col_date, col_type, col_status = st.columns(3)
-        maint_date = col_date.date_input("Maintenance Date *", value=date.today())
-        maint_type = col_type.selectbox("Issue / Maintenance Type *", MAINTENANCE_TYPES)
-        status = col_status.selectbox("Status *", MAINTENANCE_STATUSES)
+        maint_date = col_date.date_input("Maintenance Date *", value=date.today(), key="add_date_" + k)
+        maint_type = col_type.selectbox("Issue / Maintenance Type *", MAINTENANCE_TYPES,
+                                      key="add_type_" + k)
+        status = col_status.selectbox("Status *", MAINTENANCE_STATUSES, key="add_status_" + k)
         reported_problem = st.text_area(
             "Reported Problem / Issue Description *",
             placeholder="Describe the defect, error message, or routine check needed...",
-            help="Required: clearly explain what is wrong with the computer.")
+            help="Required: clearly explain what is wrong with the computer.",
+            key="add_prob_" + k)
         action_taken = st.text_area(
             "Actions Taken / Initial Diagnosis",
             placeholder="Steps taken to diagnose or repair (optional if pending)...",
-            help="What has been done so far to resolve the issue.")
+            help="What has been done so far to resolve the issue.", key="add_act_" + k)
         update_pc_status = st.checkbox(
             "Also update this PC's overall status to 'Needs Maintenance' in Equipment table",
-            value=(status != "Completed" and pc["status"] == "Working"))
+            value=(status != "Completed" and pc["status"] == "Working"), key="add_flag_" + k)
         submitted = st.form_submit_button("Submit Maintenance Record", type="primary",
                                           width="stretch")
-    if not submitted:
-        return
-
-    date_str = maint_date.strftime("%Y-%m-%d")
-    if error_msg := validation_error(pc["id"], reported_problem):
-        st.error("Validation error: " + error_msg)
-    elif db.check_maintenance_duplicate(pc["id"], date_str, maint_type):
-        st.error(f"⚠️ Accidental duplicate prevented: A maintenance record for "
-                 f"{pc['pc_code']} on {date_str} for '{maint_type}' already exists.")
-    else:
-        try:
-            problem = reported_problem.strip()
-            new_id = db.add_maintenance({
-                "equipment_id": pc["id"], "pc_code": pc["pc_code"], "room": pc["room"],
-                "maintenance_date": date_str, "maintenance_type": maint_type,
-                "reported_problem": problem, "action_taken": action_taken.strip(),
-                "status": status, "created_by": username})
-            if update_pc_status and status != "Completed":
-                db.update_equipment(pc["id"], dict(pc, status="Needs Maintenance"))
-            db.add_audit_log(username, "ADD_MAINTENANCE", pc["room"], pc["pc_code"],
-                             f"Type: {maint_type} | Status: {status} | Problem: {problem[:60]}")
-            toast_and_rerun("maint_table_version",
-                            f"Maintenance record #{new_id} created for {pc['pc_code']}")
-        except Exception as error:
-            st.error("Failed to save maintenance record: " + str(error))
+    if submitted:
+        if error_msg := validation_error(pc["id"], reported_problem):
+            st.session_state.pop("maint_entry", None)
+            st.error("Validation error: " + error_msg)
+        else:  # keep the report in session state so it survives the confirmation step
+            st.session_state["maint_entry"] = {
+                "equipment_id": pc["id"], "maintenance_date": maint_date.strftime("%Y-%m-%d"),
+                "maintenance_type": maint_type, "reported_problem": reported_problem.strip(),
+                "action_taken": action_taken.strip(), "status": status,
+                "update_pc_status": update_pc_status}
+    entry = st.session_state.get("maint_entry")
+    if entry and entry["equipment_id"] != pc["id"]:  # report of another PC: drop it
+        st.session_state.pop("maint_entry")
+    elif entry:
+        handle_submission(pc, entry, username)
 
 
 # -- 3. EXPORT: PDF AND EXCEL
@@ -408,7 +497,8 @@ def show_all_maintenance_records(username):
       3. When a row is picked, show its details / edit / delete (only the chosen one runs).
     """
     st.markdown("### 📋 Maintenance Activity Logs")
-    records = db.get_all_maintenance(*filter_controls("v"))
+    filters = filter_controls("v")
+    records = db.get_all_maintenance(*filters)
     st.caption(f"{len(records)} maintenance records found.")
     if not records:
         st.info("No maintenance records match your filters.")
@@ -417,7 +507,7 @@ def show_all_maintenance_records(username):
     event = st.dataframe(
         status_table(maintenance_frame(records, MAINTENANCE_LABELS)),
         hide_index=True, width="stretch", height=320, selection_mode="single-row",
-        on_select="rerun", key=f"maintenance_main_table_{st.session_state.get('maint_table_version', 0)}")
+        on_select="rerun", key=f"maintenance_main_table_{st.session_state.get('maint_table_version', 0)}_{'|'.join(filters)}")
     selected = event.selection.rows
     if selected and selected[0] < len(records):
         record = records[selected[0]]
@@ -497,7 +587,7 @@ def show_computer_maintenance_history():
                  lambda pc: f"{pc['pc_code']} ({pc['status']})")
     if pc is None:
         return
-    history = db.get_maintenance_by_equipment(pc["id"])
+    history = pc_history(pc)
 
     st.markdown(f"#### PC Profile: `{pc['pc_code']}` ({pc['room']})")
     show_facts([("Current PC Status", pc["status"]), ("CPU", pc["cpu"]),
