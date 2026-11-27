@@ -6,16 +6,26 @@ assets/database/database.py. Plain functions only, with step-by-step docstrings
 for easy conversion to pseudocode and flowcharts.
 
 Sections (chosen with pick_section; only the chosen one is run):
-  1. All Records     - search, filter, view, edit, delete
+  1. All Records     - search, filter, view, edit (not Completed), delete
   2. Add Maintenance - record a new issue for one PC
   3. History per PC  - lifetime service record of one computer
   4. Export Report   - filtered records -> PDF (landscape Letter) / Excel
+
+Rules:
+  - One UNRESOLVED (Pending / In Progress) record per PC and issue type. A new report
+    of a type that is already open is added to that record as one more problem line
+    (no new record, no stamps); the same problem is never added twice. A Completed
+    report cannot close an open record (it becomes In Progress); use Edit to complete.
+  - Every edit is written to the audit log (EDIT_MAINTENANCE) and shown as the
+    record's "Edit history", so who changed what and when is not repeated in the text.
+  - A Completed record is locked (cannot be edited) but can still be deleted.
 
 Maintenance record = dictionary with: id, equipment_id, pc_code, room,
 maintenance_date, maintenance_type, reported_problem, action_taken, status,
 created_by, created_at, updated_at.
 """
 import io
+import re
 from datetime import date, datetime
 from xml.sax.saxutils import escape
 
@@ -38,7 +48,7 @@ from modules.reports import (HEADER_STYLE, cached, excel_bytes, figure_png, pdf_
 # Table columns (dictionary key = database column, value = heading)
 MAINTENANCE_LABELS = {
     "id": "Log ID", "pc_code": "PC Code", "room": "Room", "maintenance_date": "Date",
-    "maintenance_type": "Issue Type", "reported_problem": "Reported Problem",
+    "maintenance_type": "Issue Type", "reported_problem": "Reported Problem(s)",
     "action_taken": "Action Taken", "status": "Status", "created_by": "Logged By"}
 EXPORT_LABELS = dict(MAINTENANCE_LABELS, updated_at="Last Updated")
 HISTORY_LABELS = {
@@ -48,6 +58,8 @@ HISTORY_LABELS = {
 STATUS_BADGES = {"Pending": "🟡 Pending", "In Progress": "🔵 In Progress",
                  "Completed": "🟢 Completed"}
 UNRESOLVED = MAINTENANCE_STATUSES[:2]  # Pending, In Progress
+NOTE_TAG = re.compile(r"^(\[[^\]]*\]|[•*-])\s*")  # leading bullet, old '[stamp | ...]' or '[label]'
+TRAIL_ID = re.compile(r"#(\d+)\b")        # record number inside an audit-log detail
 SECTIONS = ["📋 All Records", "➕ Add Maintenance Record",
             "🔍 History per Computer", "📤 Export Report"]
 
@@ -58,9 +70,17 @@ def status_table(df):
     return status_styled(df, MAINTENANCE_STATUS_COLORS)
 
 
-def maintenance_frame(records, labels):
-    """Turn maintenance records into a table with readable column names."""
-    return pd.DataFrame(records, columns=list(labels)).rename(columns=labels)
+def maintenance_frame(records, labels, short=True):
+    """Turn maintenance records into a table with readable column names.
+
+    With `short`, a record with more than one problem shows only '3 problems' in the
+    Reported Problem column (the full list is in the record details).
+    """
+    table = pd.DataFrame(records, columns=list(labels)).rename(columns=labels)
+    if short and "reported_problem" in labels:
+        table[labels["reported_problem"]] = [problem_summary(r["reported_problem"])
+                                             for r in records]
+    return table
 
 
 def index_of(options, value):
@@ -134,44 +154,146 @@ def show_status_metrics(counts, total, total_label, done_label):
     for column, label, value in zip(st.columns(4), labels, values):
         column.metric(label, value)
 
+def fresh_record(record):
+    """Reload one record from the database (None when it was deleted meanwhile)."""
+    return next((r for r in db.get_maintenance_by_equipment(record["equipment_id"])
+                 if r["id"] == record["id"]), None)
+
+
+def record_trail(pc_code):
+    """Edit history of a PC's records, read from the audit log.
+
+    Returns {record id: [audit rows, newest first]}.
+    """
+    trail = {}
+    for log in db.get_audit_logs("EDIT_MAINTENANCE", "All", pc_code):
+        found = TRAIL_ID.search(log["details"] or "")
+        if found:
+            trail.setdefault(int(found.group(1)), []).append(log)
+    return trail
+
+
+def show_trail(logs):
+    """Show who edited a record and when (read only)."""
+    if not logs:
+        st.caption("No edits recorded: this record has not been updated since it was created.")
+    for log in logs:
+        st.caption(f"🕘 {log['timestamp']} · {log['username']} — {log['details']}")
+
+
+def describe_changes(old, new):
+    """Short text of what changed between the old record and the new values."""
+    parts = [f"{label}: {old[field]} -> {new[field]}"
+             for field, label in (("status", "Status"), ("maintenance_type", "Type"),
+                                  ("maintenance_date", "Date")) if old[field] != new[field]]
+    parts += [f"{label} edited" for field, label in
+              (("reported_problem", "Problem"), ("action_taken", "Action"))
+              if (old[field] or "") != (new[field] or "")]
+    return "; ".join(parts)
+
+
+def strip_tag(line):
+    """A note line without its leading bullet, '[stamp | type | name]' or '[label]' tag."""
+    return NOTE_TAG.sub("", line.strip()).strip()
+
+
+def add_notes(old, new):
+    """Append each new, non-duplicate problem/action line; keep existing entries first."""
+    lines = [strip_tag(line) for line in (old or "").splitlines() if line.strip()]
+    seen = {line.casefold() for line in lines}
+    fresh = [clean for line in (new or "").splitlines()
+             if (clean := strip_tag(line)) and clean.casefold() not in seen
+             and not seen.add(clean.casefold())]
+    return "\n".join(f"• {line}" for line in lines + fresh) if fresh else (old or "")
+
+
+def problem_lines(text):
+    """The problems of a note text, one per non-empty line, without bullets or tags."""
+    return [strip_tag(line) for line in (text or "").splitlines() if line.strip()]
+
+
+def problem_summary(text):
+    """The single problem as text, or 'N problems' when there is more than one."""
+    lines = problem_lines(text)
+    return f"{len(lines)} problems" if len(lines) > 1 else (lines[0] if lines else "")
+
+
+def bullet_list(text):
+    """Markdown bullet rows, one per problem / action line."""
+    return "\n".join("- " + line for line in problem_lines(text))
+
+
+def is_duplicate_report(history, entry):
+    """True when every submitted problem line is already recorded for that date/type."""
+    wanted = {strip_tag(line).casefold() for line in entry["reported_problem"].splitlines()
+              if strip_tag(line)}
+    return bool(wanted) and any(
+        r["maintenance_date"] == entry["maintenance_date"]
+        and r["maintenance_type"] == entry["maintenance_type"]
+        and wanted.issubset({strip_tag(line).casefold()
+                             for line in (r["reported_problem"] or "").splitlines()})
+        for r in history)
+
+
+def open_record_of_type(history, maintenance_type):
+    """Newest unresolved record of this issue type (None when there is none)."""
+    return next((r for r in history if r["status"] in UNRESOLVED
+                 and r["maintenance_type"] == maintenance_type), None)
+
 
 # -- 2. SECTION: ADD MAINTENANCE RECORD
-def save_maintenance(pc, entry, target, username):
-    """Create a new record (target is None) or merge `entry` into the open record `target`.
-
-    Merging keeps the record ID, original date and type. The new problem and
-    action are appended with a '[date | type]' stamp, so earlier text is never
-    lost, and the status never moves backwards (In Progress is not reset to Pending).
-    """
-    stamp = f"[{entry['maintenance_date']} | {entry['maintenance_type']}] "
+def save_maintenance(pc, entry, username):
+    """Create a new maintenance record for `pc`, write the audit log and notify the user."""
     try:
-        if target is None:
-            record_id = db.add_maintenance(
-                dict(entry, pc_code=pc["pc_code"], room=pc["room"], created_by=username))
-            status, message = entry["status"], f"Maintenance record #{record_id} created for {pc['pc_code']}"
-            db.add_audit_log(username, "ADD_MAINTENANCE", pc["room"], pc["pc_code"],
-                             f"Type: {entry['maintenance_type']} | Status: {status} | "
-                             f"Problem: {entry['reported_problem'][:60]}")
-        else:
-            record_id = target["id"]
-            status = max(target["status"], entry["status"], key=MAINTENANCE_STATUSES.index)
-            join = lambda old, new: "\n\n".join(t for t in (old or "", stamp + new if new else "") if t)
-            db.update_maintenance(record_id, {
-                "maintenance_date": target["maintenance_date"],
-                "maintenance_type": target["maintenance_type"],
-                "reported_problem": join(target["reported_problem"], entry["reported_problem"]),
-                "action_taken": join(target["action_taken"], entry["action_taken"]),
-                "status": status})
-            message = f"Existing issue #{record_id} for {pc['pc_code']} was updated (no duplicate created)"
-            db.add_audit_log(username, "EDIT_MAINTENANCE", pc["room"], pc["pc_code"],
-                             f"New report merged into record #{record_id} -> Status: {status} | "
-                             f"Problem: {entry['reported_problem'][:60]}")
-        if entry["update_pc_status"] and status != "Completed":
+        record_id = db.add_maintenance(
+            dict(entry, pc_code=pc["pc_code"], room=pc["room"], created_by=username))
+        db.add_audit_log(username, "ADD_MAINTENANCE", pc["room"], pc["pc_code"],
+                         f"Record #{record_id} | Type: {entry['maintenance_type']} | "
+                         f"Status: {entry['status']} | Problem: {entry['reported_problem'][:60]}")
+        if entry["update_pc_status"] and entry["status"] != "Completed":
             db.update_equipment(pc["id"], dict(pc, status="Needs Maintenance"))
-        st.session_state.pop("maint_entry", None)
-        toast_and_rerun("maint_table_version", message)
+        clear_pending_report()
+        toast_and_rerun("maint_table_version",
+                        f"Maintenance record #{record_id} created for {pc['pc_code']}")
     except Exception as error:
         st.error("Failed to save maintenance record: " + str(error))
+
+
+def clear_pending_report():
+    """Forget the submitted report."""
+    st.session_state.pop("maint_entry", None)
+
+
+def merged_values(target, entry):
+    """Values of the open record `target` once the new report `entry` is added to it.
+
+    The new problem / action lines are added only when the record does not have them
+    yet. A Completed report only makes the record In Progress; the status never moves
+    backwards.
+    """
+    reported = entry["status"] if entry["status"] != "Completed" else "In Progress"
+    return {"maintenance_date": target["maintenance_date"],
+            "maintenance_type": target["maintenance_type"],
+            "reported_problem": add_notes(target["reported_problem"], entry["reported_problem"]),
+            "action_taken": add_notes(target["action_taken"], entry["action_taken"]),
+            "status": max(target["status"], reported, key=MAINTENANCE_STATUSES.index)}
+
+
+def add_to_record(pc, entry, target, new, changes, username):
+    """After the user confirmed: save `new` into the open record, log it, tell the user."""
+    try:
+        db.update_maintenance(target["id"], new)
+        db.add_audit_log(username, "EDIT_MAINTENANCE", pc["room"], pc["pc_code"],
+                         f"Record #{target['id']} updated | New report added | {changes} | "
+                         f"Problem: {entry['reported_problem'][:60]}")
+        if entry["update_pc_status"] and new["status"] != "Completed":
+            db.update_equipment(pc["id"], dict(pc, status="Needs Maintenance"))
+        clear_pending_report()
+        toast_and_rerun("maint_table_version",
+                        f"Added to the existing {target['maintenance_type']} record "
+                        f"#{target['id']} of {pc['pc_code']}")
+    except Exception as error:
+        st.error("Failed to update maintenance record: " + str(error))
 
 
 def handle_submission(pc, entry, username):
@@ -179,45 +301,44 @@ def handle_submission(pc, entry, username):
 
     Steps:
       1. Read the PC's own history once; stop if the same report was already saved.
-      2. Find unresolved records (Pending / In Progress) of this PC, whatever their date.
-      3. None found -> create the record. Otherwise show the existing record(s) and
-         let the user choose: A. update the existing issue, B. create a new report.
+      2. Find the unresolved record (Pending / In Progress) of this PC with the SAME
+         issue type. Completed records never count.
+      3. None found -> create a new record.
+      4. Found, but the problem is already in it -> tell the user, change nothing.
+      5. Found -> show the record and the new problem and wait: the report is added
+         to that existing record only when the user presses the Add button.
     """
     history = pc_history(pc)
-    stamped = f"[{entry['maintenance_date']} | {entry['maintenance_type']}] {entry['reported_problem']}"
-    if any(stamped in r["reported_problem"] or (
-            r["maintenance_date"] == entry["maintenance_date"]
-            and r["maintenance_type"] == entry["maintenance_type"]
-            and r["reported_problem"] == entry["reported_problem"]) for r in history):
-        st.session_state.pop("maint_entry", None)
+    if is_duplicate_report(history, entry):
+        clear_pending_report()
         st.error(f"⚠️ Accidental duplicate prevented: this same report for {pc['pc_code']} "
                  f"on {entry['maintenance_date']} is already recorded.")
         return
-    open_issues = [r for r in history if r["status"] in UNRESOLVED]
-    if not open_issues:
-        save_maintenance(pc, entry, None, username)
+    target = open_record_of_type(history, entry["maintenance_type"])
+    if target is None:
+        save_maintenance(pc, entry, username)
+        return
+    new = merged_values(target, entry)
+    if not (changes := describe_changes(target, new)):
+        clear_pending_report()
+        st.warning(f"⚠️ This problem is already in record #{target['id']} of {pc['pc_code']} "
+                   f"({target['maintenance_type']}). Nothing was added.")
         return
 
-    st.warning(f"⚠️ {pc['pc_code']} already has {len(open_issues)} unresolved maintenance "
-               f"record(s). Is your new report about the same ongoing issue?")
-    target = open_issues[0]
-    if len(open_issues) > 1:
-        labels = {f"#{r['id']} · {r['maintenance_date']} · {r['maintenance_type']} · {r['status']}": r
-                  for r in open_issues}
-        same_type = next((i for i, r in enumerate(open_issues)
-                          if r["maintenance_type"] == entry["maintenance_type"]), 0)
-        target = labels[st.selectbox("Existing unresolved record", list(labels), index=same_type,
-                                     key=f"maint_open_{pc['id']}")]
+    st.warning(f"⚠️ {pc['pc_code']} already has an open **{entry['maintenance_type']}** "
+               f"record (#{target['id']}). A PC keeps one open record per issue type, so "
+               f"your report can only be added to it as another problem.")
     st.markdown("**Existing record:**")
     show_record_details(target)
-    st.markdown("**Your new report (not saved yet):**")
-    st.info(f"{entry['maintenance_date']} · {entry['maintenance_type']} · {entry['status']}"
-            f" — {entry['reported_problem']}")
-    col_update, col_new = st.columns(2)
-    if col_update.button("A. Update Existing Issue", type="primary", width="stretch"):
-        save_maintenance(pc, entry, target, username)
-    if col_new.button("B. Create New Maintenance Report", width="stretch"):
-        save_maintenance(pc, entry, None, username)
+    st.markdown("**Your new report (not added yet):**")
+    st.info(bullet_list(entry["reported_problem"]))
+    col_add, col_cancel = st.columns(2)
+    if col_add.button(f"➕ Add to existing record #{target['id']}", type="primary",
+                      width="stretch"):
+        add_to_record(pc, entry, target, new, changes, username)
+    if col_cancel.button("Cancel", width="stretch", key="maint_cancel_add"):
+        clear_pending_report()
+        st.rerun()
 
 
 def show_add_maintenance_form(username):
@@ -227,9 +348,8 @@ def show_add_maintenance_form(username):
       1. Load all computers; let the user pick a room, then a computer.
       2. Collect date, issue type, status, problem and initial action.
       3. On submit, validate the inputs.
-      4. Check for an unresolved record of the same PC, then create a new record
-         or update the existing one (see handle_submission), write the audit log
-         and notify the user.
+      4. Create a new record, or add the problem to the PC's open record of the same
+         issue type (see handle_submission), write the audit log and notify the user.
     """
     st.markdown("### ➕ Record New Computer Issue / Maintenance")
     st.caption("Log hardware or software issues, scheduled maintenance, or repairs.")
@@ -256,11 +376,12 @@ def show_add_maintenance_form(username):
         maint_date = col_date.date_input("Maintenance Date *", value=date.today(), key="add_date_" + k)
         maint_type = col_type.selectbox("Issue / Maintenance Type *", MAINTENANCE_TYPES,
                                       key="add_type_" + k)
-        status = col_status.selectbox("Status *", MAINTENANCE_STATUSES, key="add_status_" + k)
+        status = col_status.selectbox("Status *", MAINTENANCE_STATUSES, key="add_status_" + k,
+                                      help="A record saved as Completed is locked (delete-only).")
         reported_problem = st.text_area(
-            "Reported Problem / Issue Description *",
+            "Reported Problem(s) / Issue Description *",
             placeholder="Describe the defect, error message, or routine check needed...",
-            help="Required: clearly explain what is wrong with the computer.",
+            help="Required. Enter one or more problems, one per line; new unique lines append to an open record.",
             key="add_prob_" + k)
         action_taken = st.text_area(
             "Actions Taken / Initial Diagnosis",
@@ -273,7 +394,7 @@ def show_add_maintenance_form(username):
                                           width="stretch")
     if submitted:
         if error_msg := validation_error(pc["id"], reported_problem):
-            st.session_state.pop("maint_entry", None)
+            clear_pending_report()
             st.error("Validation error: " + error_msg)
         else:  # keep the report in session state so it survives the confirmation step
             st.session_state["maint_entry"] = {
@@ -283,7 +404,7 @@ def show_add_maintenance_form(username):
                 "update_pc_status": update_pc_status}
     entry = st.session_state.get("maint_entry")
     if entry and entry["equipment_id"] != pc["id"]:  # report of another PC: drop it
-        st.session_state.pop("maint_entry")
+        clear_pending_report()
     elif entry:
         handle_submission(pc, entry, username)
 
@@ -359,7 +480,7 @@ def build_maintenance_pdf(records, admin_name, filter_text, now):
     styles = getSampleStyleSheet()
     small = styles["BodyText"].clone("small")
     small.fontSize, small.leading = 8, 10
-    wrap = lambda text: Paragraph(escape(text), small)
+    wrap = lambda text: Paragraph(escape(text).replace("\n", "<br/>"), small)
 
     data = [list(MAINTENANCE_LABELS.values())] + [[
         str(r["id"]), escape(r["pc_code"]), escape(r["room"]), r["maintenance_date"],
@@ -399,7 +520,7 @@ def build_maintenance_excel(records, filter_text):
            for k, v in count_by(records, "maintenance_type", MAINTENANCE_TYPES).items()])
     return excel_bytes(
         {"Summary": pd.DataFrame(summary_rows),
-         "Records": maintenance_frame(records, EXPORT_LABELS)},
+         "Records": maintenance_frame(records, EXPORT_LABELS, short=False)},
         lambda sheet: sheet.cell(row=len(summary_rows) + 3, column=1,
                                  value="Filters: " + filter_text))
 
@@ -409,11 +530,22 @@ def show_edit_record_form(record, username):
     """Draw the form to edit an existing maintenance record.
 
     Steps:
-      1. Fill the form fields with the record's current values.
-      2. On Save, validate the inputs.
-      3. Update the database, write the audit log, reload.
+      1. Reload the record; a Completed record is locked, so stop with a message.
+      2. Fill the form fields with the record's current values.
+      3. On Save, validate the inputs; stop when nothing changed or when the PC already
+         has another open record of the chosen type.
+      4. Update the database, write the audit log (what changed), reload.
     """
+    record = fresh_record(record)
+    if record is None:
+        st.warning("This record no longer exists.")
+        return
     rid = str(record["id"])
+    if record["status"] == "Completed":
+        st.markdown(f"#### 🔒 Maintenance Record `#{rid}` ({record['pc_code']}) is Completed")
+        st.info("Completed records are locked and cannot be edited. "
+                "Open the 🗑️ Delete Record tab if it has to be removed.")
+        return
     st.markdown(f"#### ✏️ Edit Maintenance Record `#{rid}` ({record['pc_code']})")
     try:  # stored date text -> date
         current_date = datetime.strptime(record["maintenance_date"], "%Y-%m-%d").date()
@@ -422,14 +554,17 @@ def show_edit_record_form(record, username):
 
     with st.form("form_edit_maintenance_" + rid):
         col1, col2, col3 = st.columns(3)
-        new_date = col1.date_input("Maintenance Date", value=current_date, key="edit_date_" + rid)
+        new_date = col1.date_input("Maintenance Date", value=current_date,
+                                   key="edit_date_" + rid)
         new_type = col2.selectbox("Issue / Type", MAINTENANCE_TYPES, key="edit_type_" + rid,
                                   index=index_of(MAINTENANCE_TYPES, record["maintenance_type"]))
         new_status = col3.selectbox("Status", MAINTENANCE_STATUSES, key="edit_status_" + rid,
-                                    index=index_of(MAINTENANCE_STATUSES, record["status"]))
+                                    index=index_of(MAINTENANCE_STATUSES, record["status"]),
+                                    help="Once saved as Completed, the record is locked "
+                                         "and can only be deleted.")
         new_problem = st.text_area("Reported Problem", value=record["reported_problem"],
                                    key="edit_prob_" + rid)
-        new_action = st.text_area("Action Taken", value=record.get("action_taken", ""),
+        new_action = st.text_area("Action Taken", value=record.get("action_taken") or "",
                                   key="edit_act_" + rid)
         saved = st.form_submit_button("Save Changes", type="primary", width="stretch")
     if not saved:
@@ -437,14 +572,24 @@ def show_edit_record_form(record, username):
     if error_msg := validation_error(record["equipment_id"], new_problem):
         st.error("Validation error: " + error_msg)
         return
+    new = {"maintenance_date": new_date.strftime("%Y-%m-%d"), "maintenance_type": new_type,
+           "reported_problem": new_problem.strip(), "action_taken": new_action.strip(),
+           "status": new_status}
+    if not (changes := describe_changes(record, new)):
+        st.info("Nothing was changed, so nothing was saved.")
+        return
+    if new_status in UNRESOLVED and any(
+            r["id"] != record["id"] and r["status"] in UNRESOLVED
+            and r["maintenance_type"] == new_type for r in db.get_maintenance_by_equipment(
+                record["equipment_id"])):
+        st.error(f"{record['pc_code']} already has an open {new_type} record. Add the "
+                 "problem to that record instead, or complete it first.")
+        return
 
     try:
-        db.update_maintenance(record["id"], {
-            "maintenance_date": new_date.strftime("%Y-%m-%d"), "maintenance_type": new_type,
-            "reported_problem": new_problem.strip(), "action_taken": new_action.strip(),
-            "status": new_status})
+        db.update_maintenance(record["id"], new)
         db.add_audit_log(username, "EDIT_MAINTENANCE", record["room"], record["pc_code"],
-                         f"Updated record #{rid} -> Status: {new_status} | Type: {new_type}")
+                         f"Record #{rid} updated | {changes}")
         toast_and_rerun("maint_table_version", f"Record #{rid} updated.")
     except Exception as error:
         st.error("Error updating record: " + str(error))
@@ -460,7 +605,8 @@ def show_delete_record_section(record, username):
     st.markdown(f"#### 🗑️ Delete Maintenance Record `#{rid}`")
     st.warning(f"Are you sure you want to delete this maintenance record for "
                f"**{record['pc_code']}** ({record['maintenance_date']})? "
-               f"This action cannot be undone.")
+               f"This action cannot be undone."
+               + (" The Completed count will go down by one." if record["status"] == "Completed" else ""))
     if st.columns([1, 3])[0].button("Yes, permanently delete", type="primary",
                                     key="del_maint_" + rid):
         try:
@@ -479,13 +625,15 @@ def show_record_details(record):
                 ("Status", STATUS_BADGES.get(record["status"], record["status"])),
                 ("Date", record["maintenance_date"]), ("Type", record["maintenance_type"]),
                 ("Logged By", record["created_by"]), ("Last Updated", record["updated_at"])])
-    st.markdown("**Reported Problem:**")
-    st.info(record["reported_problem"])
+    st.markdown(f"**Reported Problem(s) ({len(problem_lines(record['reported_problem']))}):**")
+    st.info(bullet_list(record["reported_problem"]))
     st.markdown("**Action Taken:**")
     if (record.get("action_taken") or "").strip():
-        st.success(record["action_taken"])
+        st.success(bullet_list(record["action_taken"]))
     else:
         st.caption("No repair action recorded yet.")
+    with st.expander("🕘 Edit history"):
+        show_trail(record_trail(record["pc_code"]).get(record["id"], []))
 
 
 def show_all_maintenance_records(username):
@@ -604,13 +752,18 @@ def show_computer_maintenance_history():
     st.dataframe(status_table(maintenance_frame(history, HISTORY_LABELS)),
                  hide_index=True, width="stretch")
     st.markdown("**Detailed Timeline Cards:**")
+    trail = record_trail(pc["pc_code"])
     for event in history:
         badge = STATUS_BADGES.get(event["status"], event["status"])
         with st.expander(f"{event['maintenance_date']} — {event['maintenance_type']} ({badge})"):
-            st.write("**Reported Problem:** " + event["reported_problem"])
-            st.write("**Action Taken:** " + (event["action_taken"] or "_None recorded_"))
+            st.markdown(f"**Reported Problem(s) ({len(problem_lines(event['reported_problem']))}):**\n\n"
+                + bullet_list(event["reported_problem"]))
+            st.markdown("**Action Taken:**\n\n" + (bullet_list(event["action_taken"])
+                                                   or "_None recorded_"))
             st.caption(f"Logged by {event['created_by']} on {event.get('created_at', 'N/A')}"
                        f" | Last updated: {event.get('updated_at', 'N/A')}")
+            st.markdown("**Edit history:**")
+            show_trail(trail.get(event["id"], []))
 
 
 # -- 7. MAIN INTERFACE
